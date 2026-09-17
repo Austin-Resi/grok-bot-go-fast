@@ -45,7 +45,17 @@ Then:
 fast_web_fill({ text: "Zurich" })
 ```
 
-The browser session stays open on the MCP process while status is `need_text`. `fast_web_abort` closes it.
+The browser session stays open on the MCP process after `need_text`, `blocked`, and `budget`, and after `done` when attached to the Bot's Chrome. The result says so with `open: true`. Call **`fast_web_abort`** when you are finished with the page.
+
+To keep working on that same page (new goal, more steps), call:
+
+```
+fast_web_task({ reuseBrowser: true, goal: "..." })
+```
+
+A new `fast_web_task` with a `url` and no `reuseBrowser` replaces the session. `keepOpen` overrides the default in either direction.
+
+If the result has `attached: true`, this is the Bot's Chrome (shared cookies). Do not quit Chrome. On `blocked`, use screenshot computer use on the **same** `url` — the tab is already in front.
 
 `fillMode: "helper"` is optional: a small Gateway chat model invents the string instead of asking you.
 
@@ -54,13 +64,13 @@ The browser session stays open on the MCP process while status is `need_text`. `
 - Screenshot → VLM → `click(x, y)`
 - Call `jev_choose_ui_action` and then try to click the index yourself
 - Ask Jev to generate the TYPE_TEXT string
-- Restart `fast_web_task` while a fill is waiting — that aborts the live page
+- Restart `fast_web_task` while a fill is waiting — that aborts the live page unless you call `fast_web_fill` first
 
 ## Fall back to screenshot computer use only if
 
-- `fast_web_task` / `fast_web_fill` returns `blocked` (canvas, empty tree, low confidence)
+- `fast_web_task` / `fast_web_fill` returns `blocked` (canvas, empty tree, low confidence) — continue screenshot computer use on the returned url; the tab is still open
 - The site is a game, canvas editor, or otherwise not HTML/ARIA controls
-- The tool errors because Chrome/Chromium is missing (`npx playwright install chromium`)
+- The tool errors because Chrome/Chromium is missing (`npx playwright install chromium`) and CDP attach failed
 
 ## Auth
 
@@ -69,6 +79,6 @@ Needs `AI_GATEWAY_API_KEY`. Jev is evaluation, not chat completions. Create a ke
 ## Other tools
 
 - `fast_web_fill` — resume after `need_text`
-- `fast_web_abort` — drop the session
+- `fast_web_abort` — close the Jev tab (never quits the Bot's Chrome when attached)
 - `jev_decide` — non-UI judgments (choice / score / boolean) on arbitrary state
 - `jev_choose_ui_action` — debug only; does not click

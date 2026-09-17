@@ -45,20 +45,31 @@ export function createServer(): McpServer {
     "fast_web_task",
     {
       description:
-        "Do a web task quickly. Owns the browser: snapshot live DOM nodes, Jev picks the control, this tool clicks it. When a text field is needed, status is need_text — you write the string and call fast_web_fill. Do not screenshot-click. Default fillMode is bot.",
+        "Do a web task quickly. Attaches to the Bot's Chrome when it exposes DevTools (enable via chrome://inspect/#remote-debugging; Jev reads DevToolsActivePort), otherwise launches Chromium. Snapshot live DOM nodes, Jev picks the control, this tool clicks that node (bringToFront first). When a text field is needed, status is need_text — you write the string and call fast_web_fill. On blocked/budget, or whenever attached, the tab stays open (open: true) — use screenshot computer use on the returned url, same tab. Do not screenshot-click the happy path.",
       inputSchema: z.object({
-        url: z.string().describe("Starting URL."),
+        url: z
+          .string()
+          .optional()
+          .describe("Starting URL. Required unless reuseBrowser is true."),
         goal: z.string().describe("The full task. Stop condition belongs here."),
         maxSteps: z.number().int().min(1).max(40).optional(),
         fillMode: z
           .enum(["bot", "helper"])
           .optional()
           .describe("bot (default): pause on TYPE_TEXT and wait for fast_web_fill. helper: a small Gateway chat model fills the string."),
+        keepOpen: z
+          .boolean()
+          .optional()
+          .describe("Leave the tab open after the run so screenshot computer use can continue on the same page. Default: true when attached to the Bot's Chrome or when status is blocked/budget; false for a done run in Jev's own Chromium. When attached, fast_web_abort closes only the Jev tab — never Chrome."),
+        reuseBrowser: z
+          .boolean()
+          .optional()
+          .describe("Keep the already-open page instead of launching a new browser. Pass a url to navigate that same window. Do not use while status is need_text."),
       }),
     },
-    async ({ url, goal, maxSteps, fillMode }) => {
+    async ({ url, goal, maxSteps, fillMode, keepOpen, reuseBrowser }) => {
       try {
-        const result = await startFastWebTask({ url, goal, maxSteps, fillMode });
+        const result = await startFastWebTask({ url, goal, maxSteps, fillMode, keepOpen, reuseBrowser });
         return jsonResult(result);
       } catch (error) {
         return errorResult(error instanceof Error ? error.message : String(error));
@@ -88,7 +99,8 @@ export function createServer(): McpServer {
   server.registerTool(
     "fast_web_abort",
     {
-      description: "Close the browser for the current fast_web_task and drop any waiting TYPE_TEXT.",
+      description:
+        "Detach from the current fast_web_task. When a result said open: true, the tab stays open until you call this. Drops any waiting TYPE_TEXT. If attached to the Bot's Chrome, this closes only the Jev tab and never quits Chrome.",
       inputSchema: z.object({}),
     },
     async () => {

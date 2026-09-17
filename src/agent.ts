@@ -10,10 +10,12 @@ import { MAX_STEPS } from "./questions.ts";
 export type FillMode = "bot" | "helper";
 
 export interface FastWebTaskInput {
-  url: string;
+  url?: string;
   goal: string;
   maxSteps?: number;
   fillMode?: FillMode;
+  keepOpen?: boolean;
+  reuseBrowser?: boolean;
 }
 
 export interface FastWebStep {
@@ -44,6 +46,8 @@ export interface FastWebTaskResult {
   next?: string;
   field?: NeedTextField;
   goal?: string;
+  open?: boolean;
+  attached?: boolean;
 }
 
 interface PendingFill {
@@ -66,27 +70,62 @@ interface Run {
   steps: FastWebStep[];
   started: number;
   pending: PendingFill | undefined;
+  keepOpen: boolean | undefined;
 }
 
 let active: Run | undefined;
 
 export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWebTaskResult> {
+  const fillMode = input.fillMode ?? "bot";
+  const maxSteps = Math.min(input.maxSteps ?? MAX_STEPS, MAX_STEPS);
+
+  if (input.reuseBrowser) {
+    const run = active;
+    if (!run) {
+      throw new Error("No open browser. Start with fast_web_task and a url, or the previous run already closed.");
+    }
+    if (run.pending) {
+      throw new Error("A TYPE_TEXT is waiting. Call fast_web_fill with the string, or fast_web_abort to drop it.");
+    }
+    try {
+      if (input.url) await run.browser.goto(input.url);
+      run.page = await run.browser.observe();
+      run.goal = input.goal;
+      run.maxSteps = maxSteps;
+      run.fillMode = fillMode;
+      run.keepOpen = input.keepOpen ?? run.keepOpen;
+      run.step = 1;
+      run.history = [];
+      run.steps = [];
+      run.started = performance.now();
+      run.pending = undefined;
+      return await advanceActive();
+    } catch (error) {
+      await abortFastWebTask();
+      throw error;
+    }
+  }
+
+  const url = input.url?.trim();
+  if (!url) throw new Error("Provide a url, or set reuseBrowser: true to keep the open page.");
+
   await abortFastWebTask();
   const browser = new FastBrowser();
   try {
-    await browser.open(input.url);
+    await browser.open(url);
     const page = await browser.observe();
     active = {
       browser,
       goal: input.goal,
-      maxSteps: Math.min(input.maxSteps ?? MAX_STEPS, MAX_STEPS),
-      fillMode: input.fillMode ?? "bot",
+      maxSteps,
+      fillMode,
       step: 1,
       page,
       history: [],
       steps: [],
       started: performance.now(),
       pending: undefined,
+      keepOpen: input.keepOpen,
     };
     return await advanceActive();
   } catch (error) {
@@ -258,6 +297,7 @@ function snapshot(run: Run): Omit<FastWebTaskResult, "status"> {
     steps: run.steps,
     elapsedMs: Math.round(performance.now() - run.started),
     goal: run.goal,
+    attached: run.browser.attached,
   };
 }
 
@@ -272,6 +312,7 @@ function needText(run: Run): FastWebTaskResult {
       value: pending?.action.value,
     },
     next: "Write the exact string for this field from the goal, then call fast_web_fill({ text }). Do not screenshot. Do not call fast_web_task again until this run finishes.",
+    open: true,
   };
 }
 
@@ -280,7 +321,37 @@ async function stop(
   run: Run,
   reason?: string,
 ): Promise<FastWebTaskResult> {
-  const result = { ...snapshot(run), status, reason };
-  await abortFastWebTask();
+  run.pending = undefined;
+  // Default: keep the tab for handoff when it is the Bot's Chrome, or when the
+  // run did not finish. A done run in Jev's own Chromium has nothing to hand off.
+  const keepOpen = run.keepOpen ?? (run.browser.attached || status !== "done");
+  if (keepOpen) await run.browser.focus();
+  const result: FastWebTaskResult = {
+    ...snapshot(run),
+    status,
+    reason,
+    open: keepOpen,
+    next: stopNext(status, run, keepOpen),
+  };
+  if (!keepOpen) await abortFastWebTask();
   return result;
+}
+
+function stopNext(
+  status: Exclude<FastWebTaskResult["status"], "need_text">,
+  run: Run,
+  keepOpen: boolean,
+): string | undefined {
+  if (!keepOpen) return undefined;
+  const tab = `This tab is still open at ${run.page.url}.`;
+  const guest = run.browser.attached
+    ? " attached=true: this is the Bot's Chrome. Do not quit it. fast_web_abort closes only the Jev tab."
+    : " Call fast_web_abort to close this browser.";
+  if (status === "done") {
+    return `${tab} Call fast_web_task({ reuseBrowser: true, goal }) to continue on this page.${guest}`;
+  }
+  if (status === "blocked") {
+    return `${tab} Use screenshot computer use on this same page (CAPTCHA, canvas, 2FA). Do not open a new window. Or retry with fast_web_task({ reuseBrowser: true, goal }).${guest}`;
+  }
+  return `${tab} Continue with fast_web_task({ reuseBrowser: true, goal, maxSteps }).${guest}`;
 }

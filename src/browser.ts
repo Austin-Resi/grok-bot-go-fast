@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type CDPSession, type Page } from "playwright";
 import type { ObservedPage, SnapshotAction } from "./action-space.ts";
+import { discoverCdpUrl } from "./cdp.ts";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SNAPSHOT = readFileSync(join(ROOT, "runtime/snapshot.js"), "utf8");
@@ -21,18 +22,42 @@ interface ClickTarget {
   y: number;
 }
 
+// One CDP client per Chrome. Reconnecting per task leaks connections and, with
+// the Chrome 144+ chrome://inspect flow, prompts the user on every connect.
+let shared: { url: string; browser: Browser } | undefined;
+
+async function sharedBrowser(url: string): Promise<Browser> {
+  if (shared?.url === url && shared.browser.isConnected()) return shared.browser;
+  const browser = await chromium.connectOverCDP(url);
+  shared = { url, browser };
+  browser.once("disconnected", () => {
+    if (shared?.browser === browser) shared = undefined;
+  });
+  return browser;
+}
+
+export async function disconnectSharedBrowser(): Promise<void> {
+  const current = shared;
+  shared = undefined;
+  await current?.browser.close().catch(() => undefined);
+}
+
 export class FastBrowser {
   private browser: Browser | undefined;
   private page: Page | undefined;
   private session: CDPSession | undefined;
   private connected = false;
 
+  get attached(): boolean {
+    return this.connected;
+  }
+
   async open(url: string): Promise<void> {
-    const cdp = process.env.CDP_URL?.trim();
+    const cdp = await discoverCdpUrl();
     const headless = process.env.JEV_HEADLESS === "true";
 
     if (cdp) {
-      this.browser = await chromium.connectOverCDP(cdp);
+      this.browser = await sharedBrowser(cdp);
       this.connected = true;
       const context = this.browser.contexts()[0] ?? await this.browser.newContext({
         viewport: { width: 1120, height: 780 },
@@ -44,8 +69,18 @@ export class FastBrowser {
       this.page = await context.newPage();
     }
 
-    await this.page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
     this.session = await this.page.context().newCDPSession(this.page);
+    await this.goto(url);
+  }
+
+  async goto(url: string): Promise<void> {
+    const page = this.requirePage();
+    await this.focus();
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
+  }
+
+  async focus(): Promise<void> {
+    await this.page?.bringToFront().catch(() => undefined);
   }
 
   async observe(): Promise<ObservedPage> {
@@ -63,6 +98,7 @@ export class FastBrowser {
 
   async act(action: SnapshotAction, text?: string): Promise<void> {
     const page = this.requirePage();
+    await this.focus();
     if (action.kind === "wait") {
       await page.waitForTimeout(100);
       return;
@@ -106,8 +142,10 @@ export class FastBrowser {
     this.session = undefined;
     await this.page?.close().catch(() => undefined);
     this.page = undefined;
+    // Attached browsers stay connected in `shared`; only Jev's own launch is closed.
     if (this.browser && !this.connected) await this.browser.close().catch(() => undefined);
     this.browser = undefined;
+    this.connected = false;
   }
 
   private requirePage(): Page {
@@ -115,4 +153,3 @@ export class FastBrowser {
     return this.page;
   }
 }
-
