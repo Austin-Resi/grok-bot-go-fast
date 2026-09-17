@@ -50,6 +50,8 @@ When attached, `fast_web_abort` closes only the crack-bot tab and never quits Ch
 
 Controls hidden under a modal or cookie wall are never offered to Jev. Controls inside a dialog or a large fixed banner are tagged, and their Close / Dismiss / No thanks / I already donated buttons are marked as dismiss controls. If Jev chooses `TYPE_TEXT` on a field outside an open banner, the loop clicks the banner's dismiss control first and decides again, so the Bot is never asked for `need_text` on a field that is about to be covered. A covered or vanished target counts as a step and is recorded as failed, so the loop cannot spin.
 
+For multi-step goals, each step also offers up to `CRACK_BOT_PLAN_TOP_K` (32) offscreen links ranked against the goal; picking one scrolls to it and clicks. A run becomes `blocked` only after `CRACK_BOT_NO_PROGRESS_LIMIT` (3) consecutive steps change nothing, after the loop has tried scrolling and BACK on its own. The result's `visited` and `stats` explain what happened.
+
 Every call returns within `CRACK_BOT_MAX_RUN_MS` (default 45000, below the usual 60s MCP client timeout) with `status: "budget"` and the tab open. Continue with `reuseBrowser: true`. Per-call `maxMs` can lower it.
 
 ## 4. Attach the MCP server

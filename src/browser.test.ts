@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { describe, it } from "node:test";
 import { FastBrowser } from "./browser.ts";
 
@@ -54,6 +55,80 @@ describe("FastBrowser", () => {
       assert.equal(await browser.evaluate<boolean>("window.__hit === true"), true, "click landed on the anchor");
     } finally {
       await browser.close();
+    }
+  });
+
+  it("indexes offscreen links ranked by goal overlap and clicks one by scrolling to it", { timeout: 30_000 }, async () => {
+    process.env.CRACK_BOT_HEADLESS = "true";
+    process.env.CRACK_BOT_CDP_DISCOVER = "false";
+    delete process.env.CDP_URL;
+    const filler = Array.from({ length: 60 }, (_, i) => `<p>Paragraph ${i} of body text with no links in it.</p>`).join("");
+    const html = `<!doctype html>
+      <header><nav><a href="/menu">Main menu</a></nav></header>
+      <main>
+        <p>Above the fold: <a id="top" href="/wiki/Earth">Earth</a></p>
+        ${filler}
+        <p>Far below: <a id="venus" href="/wiki/Venus">Venus</a> and
+           <a id="mars" href="javascript:void(0)" onclick="window.__mars=true">Mars</a> and
+           <a id="jup" href="/wiki/Jupiter">Jupiter</a>.</p>
+      </main>
+      <footer><a href="/about">About</a><a href="/mars-footer">Mars in the footer</a></footer>`;
+    const browser = new FastBrowser();
+    try {
+      await browser.open(`data:text/html,${encodeURIComponent(html)}`);
+      const page = await browser.observe({ goal: "Reach the Mars article", topK: 5 });
+
+      const viewport = page.actions.filter((a) => a.node != null && !a.offscreen).map((a) => a.label);
+      assert.ok(viewport.includes("Earth"), "above-the-fold link is a viewport action");
+      assert.ok(!viewport.includes("Mars"), "below-the-fold link is not a viewport action");
+
+      const offscreen = page.actions.filter((a) => a.offscreen);
+      assert.equal(offscreen.length, 5, `top-K of ${page.indexed_candidates} offscreen candidates are offered`);
+      assert.equal(offscreen[0].label, "Mars", "goal-overlapping main-content link ranks first");
+      assert.equal(offscreen[0].main, true);
+      assert.equal(offscreen[0].offscreen, "below");
+      const marsFooter = offscreen.find((a) => a.label === "Mars in the footer");
+      assert.ok(marsFooter && (marsFooter.score ?? 0) < (offscreen[0].score ?? 0), "chrome link ranks below the main-content match");
+      assert.equal(offscreen[1].label, "Mars in the footer", "goal overlap still beats non-matching main links");
+      assert.equal(page.indexed_candidates, 5);
+
+      await browser.act(offscreen[0]);
+      assert.equal(await browser.evaluate<boolean>("window.__mars === true"), true, "scrolled to and clicked the offscreen link");
+      assert.ok((await browser.evaluate<number>("scrollY")) > 0, "page scrolled to reach the target");
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("BACK returns to the previous page only after an in-run navigation", { timeout: 30_000 }, async () => {
+    process.env.CRACK_BOT_HEADLESS = "true";
+    process.env.CRACK_BOT_CDP_DISCOVER = "false";
+    delete process.env.CDP_URL;
+    // Chrome refuses page-initiated navigation to data: URLs, so serve two real pages.
+    const server = createServer((req, res) => {
+      res.setHeader("content-type", "text/html");
+      res.end(req.url === "/second" ? "<!doctype html><h1>Second</h1>" : '<!doctype html><a id="go" href="/second">Go</a>');
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const browser = new FastBrowser();
+    try {
+      await browser.open(`http://127.0.0.1:${address.port}/`);
+      const page = await browser.observe();
+      assert.equal(browser.canGoBack, false);
+      const go = page.actions.find((a) => a.label === "Go");
+      await browser.act(go!);
+      const after = await browser.observe();
+      assert.ok(after.text.includes("Second"), `navigated, got ${after.url}`);
+      assert.equal(browser.canGoBack, true);
+      await browser.act({ id: "back", kind: "back", label: "back" });
+      const back = await browser.observe();
+      assert.ok(back.actions.some((a) => a.label === "Go"), "back on the first page");
+      assert.equal(browser.canGoBack, false);
+    } finally {
+      await browser.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 

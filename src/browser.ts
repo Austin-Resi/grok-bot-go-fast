@@ -21,6 +21,14 @@ export class StalePage extends Error {
 interface ClickTarget {
   x: number;
   y: number;
+  scrolled?: number;
+}
+
+export interface ObserveOptions {
+  /** Ranks offscreen candidates against this text. */
+  goal?: string;
+  /** How many offscreen candidates to offer. */
+  topK?: number;
 }
 
 // One CDP client per Chrome. Reconnecting per task leaks connections and, with
@@ -49,6 +57,9 @@ export class FastBrowser {
   private session: CDPSession | undefined;
   private connected = false;
   private attachment: string | undefined;
+  private lastUrl: string | undefined;
+  private navigations = 0;
+  private wentBack = false;
 
   get attached(): boolean {
     return this.connected;
@@ -85,6 +96,9 @@ export class FastBrowser {
     const page = this.requirePage();
     await this.focus();
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
+    this.navigations = 0;
+    this.wentBack = false;
+    this.lastUrl = page.url();
   }
 
   async focus(): Promise<void> {
@@ -100,11 +114,28 @@ export class FastBrowser {
     return result.result?.value as T;
   }
 
-  async observe(): Promise<ObservedPage> {
+  /** Number of in-run navigations available to BACK. */
+  get canGoBack(): boolean {
+    return this.navigations > 0;
+  }
+
+  async back(): Promise<void> {
+    const page = this.requirePage();
+    await this.focus();
+    await page.goBack({ waitUntil: "domcontentloaded", timeout: 20_000 });
+    this.navigations = Math.max(0, this.navigations - 1);
+  }
+
+  async observe(opts: ObserveOptions = {}): Promise<ObservedPage> {
     const session = this.session;
     if (!session) throw new Error("Browser is not open");
+    const page = this.requirePage();
+    const url = page.url();
+    if (this.lastUrl != null && url !== this.lastUrl && !this.wentBack) this.navigations += 1;
+    this.wentBack = false;
+    this.lastUrl = url;
     const result = await session.send("Runtime.evaluate", {
-      expression: SNAPSHOT,
+      expression: `(${SNAPSHOT})(${JSON.stringify({ goal: opts.goal ?? "", topK: opts.topK })})`,
       returnByValue: true,
     });
     if (result.exceptionDetails) throw new StalePage("Document changed during evaluation");
@@ -125,6 +156,12 @@ export class FastBrowser {
       await page.waitForTimeout(50);
       return;
     }
+    if (action.kind === "back") {
+      if (!this.canGoBack) throw new StalePage("No earlier page in this run");
+      this.wentBack = true;
+      await this.back();
+      return;
+    }
     if (action.node == null) throw new StalePage("Action has no observed node");
 
     const session = this.session;
@@ -136,6 +173,9 @@ export class FastBrowser {
     if (resolved.exceptionDetails) throw new StalePage("Document changed during evaluation");
     const target = resolved.result?.value as ClickTarget | null | undefined;
     if (!target) throw new StalePage("Target changed or is covered. Observe again.");
+    // resolve-target may have scrolled an offscreen node into view; let layout settle
+    // so the click lands on the post-scroll geometry.
+    if (action.offscreen) await page.waitForTimeout(60);
 
     if (action.kind !== "select") {
       await page.mouse.click(target.x, target.y);

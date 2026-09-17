@@ -59,4 +59,48 @@ describe("actionSpace", () => {
     assert.equal(first?.overlay, 40);
     assert.equal(space.dismissFor(new Set([40])), undefined);
   });
+
+  it("offers offscreen candidates, dedupes them against viewport nodes, and exposes BACK/scroll", () => {
+    const space = actionSpace(
+      {
+        url: "https://en.wikipedia.org/wiki/Earth",
+        title: "Earth",
+        text: "Earth is the third planet",
+        actions: [
+          { id: "e1", kind: "click", node: 1, role: "link", label: "Main menu", value: "" },
+          { id: "e2", kind: "click", node: 2, role: "link", label: "Solar System", value: "", href: "/wiki/Solar_System", main: true },
+          { id: "o1", kind: "click", node: 9, role: "link", label: "Mars", value: "", href: "/wiki/Mars", main: true, offscreen: "below", score: 4 },
+          { id: "o2", kind: "click", node: 2, role: "link", label: "Solar System", value: "", offscreen: "below" },
+          { id: "scroll_down", kind: "scroll", label: "Scroll down", delta: 560 },
+          { id: "wait", kind: "wait", label: "Wait for the page to update" },
+        ],
+      },
+      "Reach the Mars article",
+      [],
+      { canGoBack: true, progress: { visited_urls: ["a", "b"], no_progress_steps: 1, step: 3, max_steps: 40 } },
+    );
+
+    assert.equal(space.input.elements.length, 3, "offscreen duplicate of node 2 is not offered twice");
+    const mars = space.input.elements[2];
+    assert.equal(mars.label, "Mars");
+    assert.equal(mars.offscreen, "below");
+    assert.equal(mars.main, true);
+    assert.equal(mars.href, "/wiki/Mars");
+    assert.equal(space.resolve("CLICK", "3")?.id, "o1");
+    assert.equal(space.input.extraOperations?.BACK !== undefined, true);
+    assert.equal(space.resolve("BACK", null)?.kind, "back");
+    assert.equal(space.canScroll("down"), true);
+    assert.equal(space.canScroll("up"), false);
+    assert.equal(space.input.progress?.no_progress_steps, 1);
+  });
+
+  it("does not offer BACK without navigation history", () => {
+    const space = actionSpace(
+      { url: "https://example.com", title: "x", text: "", actions: [{ id: "wait", kind: "wait", label: "Wait" }] },
+      "anything",
+      [],
+    );
+    assert.equal(space.input.extraOperations?.BACK, undefined);
+    assert.equal(space.resolve("BACK", null), undefined);
+  });
 });

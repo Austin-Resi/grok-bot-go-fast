@@ -1,6 +1,8 @@
 // From browser-use/jev-ultrafast (MIT). Atomic DOM snapshot with live node identity.
-(() => {
+// opts: { goal?: string, topK?: number } — goal ranks offscreen candidates.
+function (opts) {
   if (!document.body) return null;
+  opts = opts || {};
   const cache = window.__jevFast ||= {ids:new WeakMap(), nodes:new Map(), next:1};
   const identity = e => {
     if (!cache.ids.has(e)) cache.ids.set(e,cache.next++);
@@ -97,6 +99,43 @@
     }
     return onScreen ? {covered:true} : null;
   };
+  // Eyes ahead: interactive elements outside the viewport are indexed (no hit-test)
+  // and ranked against the goal so the policy can pick a target it cannot see yet.
+  // Execution scrolls the node into view and hit-tests before clicking.
+  const CHROME='header,nav,footer,aside,[role="navigation"],[role="banner"],[role="contentinfo"],[role="complementary"],[role="menubar"],[role="tablist"]';
+  const MAIN='main,[role="main"],article,#content,#main,#mw-content-text,.content,.main';
+  const tokens = s => (s||'').toLowerCase().replace(/[_\-\/]+/g,' ').match(/[a-z0-9]{3,}/g) || [];
+  const STOP=new Set(['the','and','for','with','from','into','then','that','this','via','when','until','stop','click',
+    'open','find','page','pages','link','links','goal','use','get','navigate','reach','related','result','results',
+    'about','article','following','follow','through','using','only','not','any','all','some','one','once','after',
+    'before','visible','shown','show','see','look','which','where','what','there','here','them','they','its']);
+  // Tokens of the current host ("wikipedia", "org") match every same-site href and carry no signal.
+  const hostTokens=new Set(tokens(location.hostname));
+  const goalTokens=new Set(tokens(opts.goal).filter(t=>!STOP.has(t) && !hostTokens.has(t)));
+  const topK=Math.max(0,Math.min(120,opts.topK ?? 32));
+  const candidates=[], candidateKeys=new Set();
+  const hrefPath = href => { try { return new URL(href,location.href).pathname; } catch { return href; } };
+  const indexOffscreen = (e,rname) => {
+    if (!topK || !['link','button','tab','menuitem'].includes(rname)) return;
+    let label=name(e); if (!label) return;
+    label=label.replace(/\s+/g,' ').trim().slice(0,80);
+    const href=e.getAttribute('href')||'';
+    if (/^(#|mailto:|tel:)/i.test(href) && rname==='link') return;
+    const path=href && !/^javascript:/i.test(href) ? hrefPath(href) : '';
+    const key=label.toLowerCase()+'|'+path;
+    if (candidateKeys.has(key)) return;
+    candidateKeys.add(key);
+    const inMain=!!e.closest(MAIN) && !e.closest(CHROME);
+    const chrome=!!e.closest(CHROME);
+    let score=0;
+    const seen=new Set();
+    for (const t of tokens(label+' '+decodeURIComponent(path))) {
+      if (goalTokens.has(t) && !seen.has(t)) { seen.add(t); score+=4; }
+    }
+    if (inMain) score+=1; if (chrome) score-=2; if (rname==='link'||rname==='button') score+=0.5;
+    const y=e.getBoundingClientRect().y+scrollY;
+    candidates.push({e,rname,label,href,inMain,score,y});
+  };
   const actions=[]; let covered=0;
   for (const e of document.querySelectorAll(selector)) {
     if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
@@ -104,11 +143,13 @@
     if (!rname) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
     const hit=hitPoint(e);
-    if (!hit) continue;
+    if (!hit) { indexOffscreen(e,rname); continue; }
     if (hit.covered) { covered++; continue; }
     const r=e.getBoundingClientRect();
     const base={node:identity(e),role:rname,label:name(e)||rname,
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
+    if (rname==='link') { const href=e.getAttribute('href'); if (href) base.href=href; }
+    if (e.closest(MAIN) && !e.closest(CHROME)) base.main=true;
     const overlay=overlayOf(e);
     if (overlay) {
       base.overlay=identity(overlay);
@@ -153,9 +194,19 @@
   const omitted_actions=Math.max(0,actions.length-250);
   actions.splice(250);
   actions.forEach((a,i)=>a.id='e'+(i+1));
+  // Highest goal overlap first, then main content, then document order (top of page first).
+  candidates.sort((a,b)=>b.score-a.score || (b.inMain-a.inMain) || a.y-b.y);
+  const viewportBottom=scrollY+innerHeight;
+  candidates.slice(0,topK).forEach((c,i)=>{
+    const a={id:'o'+(i+1),node:identity(c.e),kind:'click',role:c.rname,label:c.label,value:'',
+      offscreen:c.y>=viewportBottom?'below':'above',score:Math.round(c.score*10)/10};
+    if (c.href) a.href=c.href; if (c.inMain) a.main=true;
+    actions.push(a);
+  });
   if (scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560});
   if (scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560});
   actions.push({id:'wait',kind:'wait',label:'Wait for the page to update'});
   return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,
-    scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions,covered_actions:covered};
-})()
+    scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions,covered_actions:covered,
+    indexed_candidates:candidates.length};
+}

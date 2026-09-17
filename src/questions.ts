@@ -8,8 +8,19 @@ Submit populated search fields before opening a result; a populated field alone 
 WAIT only when the needed control is absent/disabled, or submitted results are still loading.
 If Search/Submit is visible and the required fields are ready, CLICK it immediately.
 Recent WAIT actions are not evidence of loading. Prefer a useful visible control over WAIT.
+Elements marked offscreen are real controls further down or up the page; choosing one scrolls to
+it and clicks it. Prefer an offscreen element that advances the goal over SCROLL or WAIT.
+Prefer main_content controls that advance the goal. Site chrome (menus, table of contents,
+appearance, header/footer navigation) only to dismiss it or when the goal requires it.
+BACK returns to the previous page; use it when the last navigation was a wrong turn.
 DONE requires visible evidence that ALL requirements are satisfied. If asked to open a result,
-a matching link is not enough. BLOCKED means no supported operation can make progress.`;
+a matching link is not enough. BLOCKED means no offered operation, including offscreen elements,
+SCROLL and BACK, can make progress; it is not "the final page is not on this screen".`;
+
+export const NO_PROGRESS = `Recent actions did not change the URL or the visible content (see progress.no_progress_steps).
+Do not repeat an action that already failed or changed nothing. Choose a different element,
+an offscreen element, SCROLL toward unexplored content, or BACK. Choose BLOCKED only if none of
+those can plausibly advance the goal.`;
 
 export const OVERLAY_OPEN = `A dialog, modal, or banner is open (see open_overlays; its controls have in_overlay set).
 Unless the goal is inside that overlay, CLICK one of its dismiss controls (dismisses_overlay: true,
@@ -28,6 +39,15 @@ export const MAX_STEPS = 40;
 
 /** Wall-clock budget per tool call. Returns "budget" before MCP clients time out (~60s). */
 export const MAX_RUN_MS = 45_000;
+
+/** Offscreen candidates offered per step alongside the viewport controls. */
+export const PLAN_TOP_K = 32;
+
+/** Consecutive no-progress steps before a soft failure becomes BLOCKED. */
+export const NO_PROGRESS_LIMIT = 3;
+
+/** Below this operation confidence a pick is executed but flagged, never trusted for BLOCKED. */
+export const LOW_CONFIDENCE = 0.45;
 
 export const TEXT_VALUE = `Return a JSON object with exactly one key, text: the exact string to enter in the selected field.
 Infer the value from the original goal and field meaning, using current page context and history.

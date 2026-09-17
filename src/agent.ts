@@ -1,12 +1,13 @@
 import { actionSpace, type ActionSpace, type ObservedPage, type SnapshotAction } from "./action-space.ts";
 import { FastBrowser, StalePage } from "./browser.ts";
 import { buildUiActionQuestions } from "./choose-ui-action.ts";
-import type { RecentAction } from "./choose-ui-action.ts";
+import type { Progress, RecentAction } from "./choose-ui-action.ts";
 import { setting } from "./env.ts";
 import { evaluateWithGateway } from "./evaluate.ts";
 import { fieldText } from "./fill-text.ts";
 import { resolveUiDecision } from "./format.ts";
-import { MAX_RUN_MS, MAX_STEPS } from "./questions.ts";
+import { freshRecovery, madeProgress, recoveryFor, type RecoveryTried } from "./progress.ts";
+import { LOW_CONFIDENCE, MAX_RUN_MS, MAX_STEPS, NO_PROGRESS_LIMIT, PLAN_TOP_K } from "./questions.ts";
 
 export type FillMode = "bot" | "helper";
 
@@ -30,12 +31,23 @@ export interface FastWebStep {
   latencyMs: number;
   confidence: number | null;
   note?: string;
+  pageChanged?: boolean;
+  /** Consecutive no-progress steps after this one. */
+  noProgress?: number;
 }
 
 export interface NeedTextField {
   label: string;
   role?: string;
   value?: string;
+}
+
+export interface RunStats {
+  gatewayMs: number;
+  recoveries: number;
+  lowConfidence: number;
+  failedTargets: number;
+  offscreenClicks: number;
 }
 
 export interface FastWebTaskResult {
@@ -53,6 +65,8 @@ export interface FastWebTaskResult {
   attached?: boolean;
   attachedTo?: string;
   display?: string;
+  visited?: string[];
+  stats?: RunStats;
 }
 
 interface PendingFill {
@@ -80,21 +94,57 @@ interface Run {
   keepOpen: boolean | undefined;
   /** Overlays whose dismiss control the loop already clicked on its own. */
   dismissTried: Set<number>;
+  visited: string[];
+  /** Consecutive steps that changed neither URL nor content. */
+  streak: number;
+  recovery: RecoveryTried;
+  stats: RunStats;
+  topK: number;
+  noProgressLimit: number;
 }
 
 let active: Run | undefined;
 
+function numberSetting(name: string, fallback: number, min: number, max: number): number {
+  const value = Number(setting(name));
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(Math.max(value, min), max);
+}
+
 function runBudgetMs(input: FastWebTaskInput): number {
-  const env = Number(setting("MAX_RUN_MS"));
-  const fallback = Number.isFinite(env) && env > 0 ? env : MAX_RUN_MS;
+  const fallback = numberSetting("MAX_RUN_MS", MAX_RUN_MS, 1_000, 10 * 60_000);
   const requested = input.maxMs ?? fallback;
   return Math.min(Math.max(requested, 1_000), fallback);
+}
+
+function freshStats(): RunStats {
+  return { gatewayMs: 0, recoveries: 0, lowConfidence: 0, failedTargets: 0, offscreenClicks: 0 };
+}
+
+function resetProgress(run: Run, goal: string, maxSteps: number, maxMs: number, fillMode: FillMode): void {
+  run.goal = goal;
+  run.maxSteps = maxSteps;
+  run.maxMs = maxMs;
+  run.fillMode = fillMode;
+  run.step = 1;
+  run.history = [];
+  run.steps = [];
+  run.started = performance.now();
+  run.deadline = run.started + maxMs;
+  run.pending = undefined;
+  run.dismissTried = new Set();
+  run.visited = [run.page.url];
+  run.streak = 0;
+  run.recovery = freshRecovery();
+  run.stats = freshStats();
 }
 
 export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWebTaskResult> {
   const fillMode = input.fillMode ?? "bot";
   const maxSteps = Math.min(input.maxSteps ?? MAX_STEPS, MAX_STEPS);
   const maxMs = runBudgetMs(input);
+  const topK = numberSetting("PLAN_TOP_K", PLAN_TOP_K, 0, 120);
+  const noProgressLimit = numberSetting("NO_PROGRESS_LIMIT", NO_PROGRESS_LIMIT, 1, 20);
 
   if (input.reuseBrowser) {
     const run = active;
@@ -106,19 +156,11 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
     }
     try {
       if (input.url) await run.browser.goto(input.url);
-      run.page = await run.browser.observe();
-      run.goal = input.goal;
-      run.maxSteps = maxSteps;
-      run.maxMs = maxMs;
-      run.fillMode = fillMode;
+      run.topK = topK;
+      run.noProgressLimit = noProgressLimit;
+      run.page = await run.browser.observe({ goal: input.goal, topK });
+      resetProgress(run, input.goal, maxSteps, maxMs, fillMode);
       run.keepOpen = input.keepOpen ?? run.keepOpen;
-      run.step = 1;
-      run.history = [];
-      run.steps = [];
-      run.started = performance.now();
-      run.deadline = run.started + maxMs;
-      run.pending = undefined;
-      run.dismissTried = new Set();
       return await advanceActive();
     } catch (error) {
       await abortFastWebTask();
@@ -133,24 +175,31 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
   const browser = new FastBrowser();
   try {
     await browser.open(url);
-    const page = await browser.observe();
-    const started = performance.now();
-    active = {
+    const page = await browser.observe({ goal: input.goal, topK });
+    const run: Run = {
       browser,
       goal: input.goal,
       maxSteps,
       maxMs,
-      deadline: started + maxMs,
+      deadline: 0,
       fillMode,
       step: 1,
       page,
       history: [],
       steps: [],
-      started,
+      started: 0,
       pending: undefined,
       keepOpen: input.keepOpen,
       dismissTried: new Set(),
+      visited: [],
+      streak: 0,
+      recovery: freshRecovery(),
+      stats: freshStats(),
+      topK,
+      noProgressLimit,
     };
+    resetProgress(run, input.goal, maxSteps, maxMs, fillMode);
+    active = run;
     return await advanceActive();
   } catch (error) {
     if (!active) await browser.close();
@@ -182,43 +231,64 @@ export async function abortFastWebTask(): Promise<void> {
   await run?.browser.close();
 }
 
+interface Outcome {
+  ok: boolean;
+  progressed: boolean;
+  pageChanged: boolean;
+}
+
 /**
- * Execute one action and re-observe. Returns false when the target was covered
- * or gone; that attempt is recorded in history so Jev does not pick it again.
+ * Execute one action, re-observe, and update the progress gate. A covered or
+ * vanished target is recorded as failed so Jev does not pick it again.
  */
-async function perform(run: Run, action: SnapshotAction, text?: string, note?: string): Promise<boolean> {
+async function perform(run: Run, action: SnapshotAction, text?: string, note?: string): Promise<Outcome> {
   const before = run.page;
+  let ok = true;
+  let failed: string | undefined;
   try {
     await run.browser.act(action, text);
   } catch (error) {
     if (!(error instanceof StalePage)) throw error;
-    run.page = await run.browser.observe();
-    run.history.push({
-      action: action.label,
-      kind: action.kind,
-      text,
-      pageChanged: false,
-      failed: "target was covered or removed before it could be used; it is not offered again",
-      note,
-    });
-    return false;
+    ok = false;
+    failed = "target was covered or removed before it could be used; it is not offered again";
+    run.stats.failedTargets += 1;
   }
-  run.page = await run.browser.observe();
+  run.page = await run.browser.observe({ goal: run.goal, topK: run.topK });
+  const delta = {
+    urlChanged: run.page.url !== before.url,
+    textChanged: run.page.text !== before.text,
+  };
+  const progressed = madeProgress(action.kind, delta, ok);
+  if (delta.urlChanged && run.visited[run.visited.length - 1] !== run.page.url) run.visited.push(run.page.url);
+  if (progressed) {
+    run.streak = 0;
+    run.recovery = freshRecovery();
+  } else {
+    run.streak += 1;
+  }
+  if (action.kind === "scroll") {
+    if ((action.delta ?? 0) >= 0) run.recovery.scrollDown = true;
+    else run.recovery.scrollUp = true;
+  }
+  if (action.kind === "back") run.recovery.back = true;
+  if (ok && action.offscreen) run.stats.offscreenClicks += 1;
+
   run.history.push({
     action: action.label,
     kind: action.kind,
     text,
-    pageChanged: run.page.url !== before.url || run.page.text !== before.text,
+    pageChanged: ok && (delta.urlChanged || delta.textChanged),
+    failed,
     note,
   });
-  return true;
+  return { ok, progressed, pageChanged: delta.urlChanged || delta.textChanged };
 }
 
 async function applyFill(run: Run, text: string): Promise<void> {
   const pending = run.pending;
   if (!pending) return;
   run.pending = undefined;
-  const ok = await perform(run, pending.action, text);
+  const outcome = await perform(run, pending.action, text);
   run.steps.push({
     step: run.step,
     operation: pending.operation,
@@ -228,7 +298,9 @@ async function applyFill(run: Run, text: string): Promise<void> {
     url: run.page.url,
     latencyMs: pending.latencyMs,
     confidence: pending.confidence,
-    note: ok ? undefined : "field was covered; nothing typed",
+    note: outcome.ok ? undefined : "field was covered; nothing typed",
+    pageChanged: outcome.pageChanged,
+    noProgress: run.streak,
   });
   run.step += 1;
 }
@@ -250,19 +322,19 @@ async function dismissBeforeTyping(
   if (!candidate) return false;
   run.dismissTried.add(candidate.overlay);
   const note = `dismissed overlay before TYPE_TEXT into "${action.label}"`;
-  await perform(run, candidate.action, undefined, note);
-  run.steps.push({
-    step: run.step,
-    operation: "CLICK",
-    target: candidate.index,
-    execute: `CLICK [${candidate.index}]`,
-    url: run.page.url,
-    latencyMs,
-    confidence,
-    note,
-  });
+  const outcome = await perform(run, candidate.action, undefined, note);
+  record(run, "CLICK", candidate.index, `CLICK [${candidate.index}]`, confidence, latencyMs, outcome, note);
   run.step += 1;
   return true;
+}
+
+function progressState(run: Run): Progress {
+  return {
+    visited_urls: run.visited.slice(-8),
+    no_progress_steps: run.streak,
+    step: run.step,
+    max_steps: run.maxSteps,
+  };
 }
 
 async function advanceActive(): Promise<FastWebTaskResult> {
@@ -274,8 +346,18 @@ async function advanceActive(): Promise<FastWebTaskResult> {
       if (performance.now() >= run.deadline) {
         return await stop("budget", run, `Stopped after ${Math.round(run.maxMs / 1000)}s of wall-clock time`);
       }
+      if (run.streak >= run.noProgressLimit) {
+        return await stop(
+          "blocked",
+          run,
+          `No progress after ${run.streak} consecutive steps. Use screenshot computer use on this page.`,
+        );
+      }
 
-      const space = actionSpace(run.page, run.goal, run.history);
+      const space = actionSpace(run.page, run.goal, run.history, {
+        progress: progressState(run),
+        canGoBack: run.browser.canGoBack,
+      });
       const built = buildUiActionQuestions(space.input);
       const started = performance.now();
       const decided = await evaluateWithGateway({
@@ -283,6 +365,7 @@ async function advanceActive(): Promise<FastWebTaskResult> {
         questions: built.questions,
       });
       const latencyMs = Math.round(performance.now() - started);
+      run.stats.gatewayMs += latencyMs;
       const decision = resolveUiDecision(decided.answers, decided.confidence);
       const execute =
         decision.operation === "DONE" || decision.operation === "BLOCKED"
@@ -290,25 +373,59 @@ async function advanceActive(): Promise<FastWebTaskResult> {
           : decision.target
             ? `${decision.operation} [${decision.target}]`
             : decision.operation;
+      const lowConfidence = decision.confidence != null && decision.confidence < LOW_CONFIDENCE;
+      if (lowConfidence) run.stats.lowConfidence += 1;
 
       if (decision.operation === "DONE") {
         record(run, decision.operation, decision.target, execute, decision.confidence, latencyMs);
         return await stop("done", run);
       }
 
-      if (decision.operation === "BLOCKED" || (decision.confidence != null && decision.confidence < 0.45)) {
-        record(run, decision.operation || "BLOCKED", decision.target, execute, decision.confidence, latencyMs);
-        return await stop(
-          "blocked",
-          run,
-          "Jev could not progress on this page. Use screenshot computer use.",
-        );
+      if (decision.operation === "BLOCKED" || !decision.operation) {
+        const recovery = recoveryFor({
+          streak: run.streak,
+          limit: run.noProgressLimit,
+          canScrollDown: space.canScroll("down"),
+          canScrollUp: space.canScroll("up"),
+          canGoBack: run.browser.canGoBack,
+          tried: run.recovery,
+        });
+        if ("stop" in recovery) {
+          record(run, "BLOCKED", null, "BLOCKED", decision.confidence, latencyMs);
+          return await stop("blocked", run, `${recovery.reason}. Use screenshot computer use on this page.`);
+        }
+        const action = space.resolve(recovery.operation, null);
+        if (!action) {
+          record(run, "BLOCKED", null, "BLOCKED", decision.confidence, latencyMs);
+          return await stop("blocked", run, "Jev could not progress on this page. Use screenshot computer use.");
+        }
+        run.stats.recoveries += 1;
+        const outcome = await perform(run, action, undefined, recovery.reason);
+        record(run, recovery.operation, null, recovery.operation, decision.confidence, latencyMs, outcome, recovery.reason);
+        run.step += 1;
+        continue;
       }
 
       const action = space.resolve(decision.operation, decision.target);
-      if (!action) return await stop("blocked", run, `No live node for ${execute}`);
+      if (!action) {
+        // Jev named something the executor cannot map. Count it against the gate
+        // and let Jev see the failure instead of ending the run.
+        run.streak += 1;
+        run.stats.failedTargets += 1;
+        run.history.push({
+          action: execute,
+          kind: "click",
+          pageChanged: false,
+          failed: "no live node matched this choice; it is not offered again",
+        });
+        record(run, decision.operation, decision.target, execute, decision.confidence, latencyMs, undefined, "no live node");
+        run.step += 1;
+        continue;
+      }
 
       if (await dismissBeforeTyping(run, space, action, decision.confidence, latencyMs)) continue;
+
+      const confidenceNote = lowConfidence ? `low confidence ${decision.confidence?.toFixed(2)}` : undefined;
 
       if (action.kind === "fill") {
         run.pending = {
@@ -330,7 +447,7 @@ async function advanceActive(): Promise<FastWebTaskResult> {
         continue;
       }
 
-      const ok = await perform(run, action);
+      const outcome = await perform(run, action, undefined, confidenceNote);
       record(
         run,
         decision.operation,
@@ -338,8 +455,10 @@ async function advanceActive(): Promise<FastWebTaskResult> {
         execute,
         decision.confidence,
         latencyMs,
-        run.page.url,
-        ok ? undefined : "target was covered; not clicked",
+        outcome,
+        [outcome.ok ? undefined : "target was covered; not clicked", action.offscreen ? "scrolled into view" : undefined, confidenceNote]
+          .filter(Boolean)
+          .join("; ") || undefined,
       );
       run.step += 1;
     }
@@ -358,7 +477,7 @@ function record(
   execute: string,
   confidence: number | null,
   latencyMs: number,
-  url = run.page.url,
+  outcome?: Outcome,
   note?: string,
 ): void {
   run.steps.push({
@@ -366,10 +485,12 @@ function record(
     operation,
     target,
     execute,
-    url,
+    url: run.page.url,
     latencyMs,
     confidence,
     note,
+    pageChanged: outcome?.pageChanged,
+    noProgress: run.streak,
   });
 }
 
@@ -384,6 +505,8 @@ function snapshot(run: Run): Omit<FastWebTaskResult, "status"> {
     attached: run.browser.attached,
     attachedTo: run.browser.attachedTo,
     display: process.env.DISPLAY || undefined,
+    visited: run.visited,
+    stats: run.stats,
   };
 }
 
@@ -409,7 +532,7 @@ async function stop(
 ): Promise<FastWebTaskResult> {
   run.pending = undefined;
   // Default: keep the tab for handoff when it is the Bot's Chrome, or when the
-  // run did not finish. A done run in Jev's own Chromium has nothing to hand off.
+  // run did not finish. A done run in crack-bot's own Chromium has nothing to hand off.
   const keepOpen = run.keepOpen ?? (run.browser.attached || status !== "done");
   if (keepOpen) await run.browser.focus();
   const result: FastWebTaskResult = {
@@ -431,7 +554,7 @@ function stopNext(
   if (!keepOpen) return undefined;
   const tab = `This tab is still open at ${run.page.url}.`;
   const guest = run.browser.attached
-    ? " attached=true: this is the Bot's Chrome. Do not quit it. fast_web_abort closes only the Jev tab."
+    ? " attached=true: this is the Bot's Chrome. Do not quit it. fast_web_abort closes only the crack-bot tab."
     : " Call fast_web_abort to close this browser.";
   if (status === "done") {
     return `${tab} Call fast_web_task({ reuseBrowser: true, goal }) to continue on this page.${guest}`;

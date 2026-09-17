@@ -1,4 +1,4 @@
-import { MAX_CHOICE_OPTIONS, NEXT_ACTION, OVERLAY_OPEN, TARGET } from "./questions.ts";
+import { MAX_CHOICE_OPTIONS, NEXT_ACTION, NO_PROGRESS, OVERLAY_OPEN, TARGET } from "./questions.ts";
 
 export interface UiElement {
   index: string;
@@ -18,6 +18,19 @@ export interface UiElement {
   overlay?: string;
   /** This control closes its overlay. */
   dismiss?: boolean;
+  /** Not currently visible; the tool scrolls to it before clicking. */
+  offscreen?: "above" | "below";
+  /** Inside the page's main content rather than navigation/header/footer chrome. */
+  main?: boolean;
+  href?: string;
+}
+
+export interface Progress {
+  visited_urls: string[];
+  /** Consecutive steps that changed neither URL nor visible content. */
+  no_progress_steps: number;
+  step: number;
+  max_steps: number;
 }
 
 export interface RecentAction {
@@ -49,6 +62,7 @@ export interface ChooseUiActionInput {
   recentActions?: RecentAction[];
   extraOperations?: Record<string, string>;
   overlays?: OpenOverlay[];
+  progress?: Progress;
 }
 
 export interface ChoiceQuestion {
@@ -63,6 +77,7 @@ export interface UiActionQuestions {
     elements: UiElement[];
     recent_actions: RecentAction[];
     open_overlays: OpenOverlay[];
+    progress?: Progress;
   };
   questions: Record<string, ChoiceQuestion>;
   truncated: boolean;
@@ -74,7 +89,7 @@ const OPERATION_LABELS: Record<string, string> = {
   SELECT: "Select an observed dropdown value.",
 };
 
-const CONTROL_OPERATIONS = new Set(["SCROLL_UP", "SCROLL_DOWN", "WAIT", "DONE", "BLOCKED"]);
+const CONTROL_OPERATIONS = new Set(["SCROLL_UP", "SCROLL_DOWN", "WAIT", "BACK", "DONE", "BLOCKED"]);
 
 function capCriteria(
   criteria: Record<string, unknown>,
@@ -121,6 +136,9 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
           expanded: element.expanded,
           in_overlay: element.overlay,
           dismisses_overlay: element.dismiss,
+          offscreen: element.offscreen,
+          main_content: element.main,
+          href: element.href,
         };
       }
     }
@@ -135,7 +153,10 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
 
   const overlays = input.overlays ?? [];
   const hasDismissibleOverlay = overlays.some((overlay) => overlay.dismiss_controls.length > 0);
-  const rules = hasDismissibleOverlay ? [NEXT_ACTION, OVERLAY_OPEN] : NEXT_ACTION;
+  const stuck = (input.progress?.no_progress_steps ?? 0) > 0;
+  const rules = [NEXT_ACTION];
+  if (hasDismissibleOverlay) rules.push(OVERLAY_OPEN);
+  if (stuck) rules.push(NO_PROGRESS);
 
   const questions: Record<string, ChoiceQuestion> = {
     operation: {
@@ -153,7 +174,7 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
       instructions: {
         goal: input.goal,
         operation,
-        rules: hasDismissibleOverlay ? [NEXT_ACTION, OVERLAY_OPEN, TARGET] : [NEXT_ACTION, TARGET],
+        rules: [...rules, TARGET],
       },
       criteria: targetCap.criteria,
     };
@@ -165,6 +186,7 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
       elements: input.elements,
       recent_actions: input.recentActions ?? [],
       open_overlays: overlays,
+      progress: input.progress,
     },
     questions,
     truncated,

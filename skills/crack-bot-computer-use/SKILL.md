@@ -63,6 +63,10 @@ The tool handles these. Controls hidden under a modal are never offered to Jev, 
 
 Each call returns within ~45s (`status: "budget"`, tab open). Continue with `reuseBrowser: true`; that is a normal path, not a failure.
 
+## Multi-step goals
+
+Give the whole goal once, including the stop condition, and let the tool run it: "Starting from the Earth article, follow links until the Mars article is open." The tool sees links below the fold, scrolls to them, goes back after a wrong turn, and only returns `blocked` after several steps that changed nothing. Do not split a browse or form flow into one call per click. If a run returns `budget` mid-way, continue with `fast_web_task({ reuseBrowser: true, goal })` using the same goal; `visited` in the result shows the path so far.
+
 `fillMode: "helper"` is optional: a small Gateway chat model invents the string instead of asking you.
 
 ## Do not

@@ -33,8 +33,32 @@ describe("buildUiActionQuestions", () => {
     assert.ok(built.questions.type_text_target);
     assert.equal(built.truncated, false);
     assert.deepEqual(built.state.open_overlays, []);
-    assert.equal(typeof built.questions.operation.instructions, "object");
-    assert.equal(Array.isArray((built.questions.operation.instructions as { rules: unknown }).rules), false);
+    const rules = (built.questions.operation.instructions as { rules: string[] }).rules;
+    assert.equal(rules.length, 1, "only the base rule when nothing is open and progress is fine");
+  });
+
+  it("adds the no-progress rule, BACK, and offscreen/main target hints", () => {
+    const built = buildUiActionQuestions({
+      goal: "Reach the Mars article",
+      page: { url: "https://en.wikipedia.org/wiki/Earth" },
+      elements: [
+        { index: "1", role: "link", label: "Main menu", operations: ["CLICK"] },
+        { index: "2", role: "link", label: "Mars", operations: ["CLICK"], offscreen: "below", main: true, href: "/wiki/Mars" },
+      ],
+      extraOperations: { BACK: "Go back", SCROLL_DOWN: "Scroll down" },
+      progress: { visited_urls: ["https://en.wikipedia.org/wiki/Earth"], no_progress_steps: 2, step: 5, max_steps: 40 },
+    });
+
+    const rules = (built.questions.operation.instructions as { rules: string[] }).rules;
+    assert.equal(rules.length, 2);
+    assert.match(rules[1], /no_progress_steps/);
+    assert.ok(built.questions.operation.criteria.BACK);
+    assert.ok(built.questions.operation.criteria.SCROLL_DOWN);
+    assert.equal(built.state.progress?.no_progress_steps, 2);
+    const mars = built.questions.click_target.criteria["2"] as Record<string, unknown>;
+    assert.equal(mars.offscreen, "below");
+    assert.equal(mars.main_content, true);
+    assert.equal(mars.href, "/wiki/Mars");
   });
 
   it("adds the overlay rule and marks dismiss targets when a dismissible overlay is open", () => {

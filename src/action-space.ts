@@ -1,8 +1,8 @@
-import type { ChooseUiActionInput, OpenOverlay, RecentAction, UiElement } from "./choose-ui-action.ts";
+import type { ChooseUiActionInput, OpenOverlay, Progress, RecentAction, UiElement } from "./choose-ui-action.ts";
 
 export interface SnapshotAction {
   id: string;
-  kind: "click" | "fill" | "select" | "scroll" | "wait";
+  kind: "click" | "fill" | "select" | "scroll" | "wait" | "back";
   label: string;
   node?: number;
   role?: string;
@@ -16,6 +16,13 @@ export interface SnapshotAction {
   overlay?: number;
   /** This control closes or dismisses its overlay. */
   dismiss?: boolean;
+  /** Not in the viewport; execution scrolls it into view first. */
+  offscreen?: "above" | "below";
+  /** Goal-overlap rank score for offscreen candidates (diagnostics). */
+  score?: number;
+  href?: string;
+  /** Inside main content, not site chrome. */
+  main?: boolean;
 }
 
 export interface ObservedPage {
@@ -25,6 +32,7 @@ export interface ObservedPage {
   actions: SnapshotAction[];
   omitted_actions?: number;
   covered_actions?: number;
+  indexed_candidates?: number;
 }
 
 export interface DismissCandidate {
@@ -33,10 +41,21 @@ export interface DismissCandidate {
   overlay: number;
 }
 
+export interface ActionSpaceOptions {
+  progress?: Progress;
+  canGoBack?: boolean;
+}
+
 const KIND_TO_OPERATION: Record<string, string> = {
   click: "CLICK",
   fill: "TYPE_TEXT",
   select: "SELECT",
+};
+
+export const BACK_ACTION: SnapshotAction = {
+  id: "back",
+  kind: "back",
+  label: "Go back to the previous page (the last navigation was a wrong turn)",
 };
 
 export interface ActionSpace {
@@ -44,6 +63,8 @@ export interface ActionSpace {
   resolve(operation: string, target: string | null): SnapshotAction | undefined;
   /** First dismiss control of an open overlay that has not already been tried. */
   dismissFor(tried: ReadonlySet<number>): DismissCandidate | undefined;
+  /** Whether the page can scroll further down / up right now. */
+  canScroll(direction: "down" | "up"): boolean;
 }
 
 export function overlayKey(id: number): string {
@@ -54,6 +75,7 @@ export function actionSpace(
   page: ObservedPage,
   goal: string,
   recentActions: RecentAction[],
+  options: ActionSpaceOptions = {},
 ): ActionSpace {
   const elements: UiElement[] = [];
   const indices = new Map<number, string>();
@@ -70,6 +92,8 @@ export function actionSpace(
     }
     const node = action.node;
     if (node == null) continue;
+    // A node already offered from the viewport is never duplicated by the index.
+    if (action.offscreen && indices.has(node)) continue;
     if (!indices.has(node)) {
       const index = String(elements.length + 1);
       indices.set(node, index);
@@ -84,6 +108,9 @@ export function actionSpace(
       if (action.selected != null) element.selected = action.selected === true || action.selected === "true";
       if (action.expanded != null) element.expanded = action.expanded === true || action.expanded === "true";
       if (action.kind === "select") element.options = [];
+      if (action.offscreen) element.offscreen = action.offscreen;
+      if (action.main) element.main = true;
+      if (action.href) element.href = action.href;
       if (action.overlay != null) {
         element.overlay = overlayKey(action.overlay);
         const overlay = overlays.get(action.overlay) ?? { id: element.overlay, dismiss_controls: [] };
@@ -113,6 +140,7 @@ export function actionSpace(
 
   const extraOperations: Record<string, string> = {};
   for (const [id, action] of controls) extraOperations[id] = action.label;
+  if (options.canGoBack) extraOperations.BACK = BACK_ACTION.label;
 
   return {
     input: {
@@ -122,16 +150,21 @@ export function actionSpace(
       recentActions,
       extraOperations,
       overlays: [...overlays.values()],
+      progress: options.progress,
     },
     resolve(operation, target) {
       if (operation === "WAIT") return controls.get("WAIT") ?? page.actions.find((a) => a.kind === "wait");
       if (operation === "SCROLL_DOWN") return controls.get("SCROLL_DOWN") ?? page.actions.find((a) => a.id === "scroll_down");
       if (operation === "SCROLL_UP") return controls.get("SCROLL_UP") ?? page.actions.find((a) => a.id === "scroll_up");
+      if (operation === "BACK") return options.canGoBack ? BACK_ACTION : undefined;
       if (!target) return undefined;
       return targets[operation]?.[target];
     },
     dismissFor(tried) {
       return dismissals.find((candidate) => !tried.has(candidate.overlay));
+    },
+    canScroll(direction) {
+      return controls.has(direction === "down" ? "SCROLL_DOWN" : "SCROLL_UP");
     },
   };
 }
