@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { describe, it } from "node:test";
-import { FastBrowser } from "./browser.ts";
+import { FastBrowser, StalePage } from "./browser.ts";
 
 describe("FastBrowser", () => {
   it("snapshots a live button and clicks that node", { timeout: 30_000 }, async () => {
@@ -127,6 +127,44 @@ describe("FastBrowser", () => {
       assert.ok(back.actions.some((a) => a.label === "Go"), "back on the first page");
       assert.equal(browser.canGoBack, false);
     } finally {
+      await browser.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("a hung history navigation is a StalePage, not a dead run", { timeout: 30_000 }, async () => {
+    process.env.CRACK_BOT_HEADLESS = "true";
+    process.env.CRACK_BOT_CDP_DISCOVER = "false";
+    delete process.env.CDP_URL;
+    // First page is served once, then hangs forever. no-store keeps it out of
+    // bfcache so goBack has to refetch it, and times out.
+    let served = 0;
+    let hanging = true;
+    const pending: import("node:http").ServerResponse[] = [];
+    const first = '<!doctype html><a id="go" href="/second">Go</a>';
+    const server = createServer((req, res) => {
+      res.setHeader("content-type", "text/html");
+      res.setHeader("cache-control", "no-store");
+      if (req.url === "/second") return void res.end("<!doctype html><h1>Second</h1>");
+      if (served++ === 0 || !hanging) return void res.end(first);
+      pending.push(res);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const browser = new FastBrowser();
+    try {
+      await browser.open(`http://127.0.0.1:${address.port}/`);
+      const page = await browser.observe();
+      await browser.act(page.actions.find((a) => a.label === "Go")!);
+      await browser.observe();
+      assert.equal(browser.canGoBack, true);
+      await assert.rejects(browser.back(1500), StalePage);
+      assert.equal(browser.canGoBack, true, "the failed back did not consume the history entry");
+    } finally {
+      // Let the hung navigation finish; page.close() waits on it otherwise.
+      hanging = false;
+      for (const res of pending) res.end(first);
       await browser.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

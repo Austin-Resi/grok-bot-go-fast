@@ -382,6 +382,7 @@ async function advanceActive(): Promise<FastWebTaskResult> {
       }
 
       if (decision.operation === "BLOCKED" || !decision.operation) {
+        const candidates = space.offscreenCandidates();
         const recovery = recoveryFor({
           streak: run.streak,
           limit: run.noProgressLimit,
@@ -389,19 +390,30 @@ async function advanceActive(): Promise<FastWebTaskResult> {
           canScrollUp: space.canScroll("up"),
           canGoBack: run.browser.canGoBack,
           tried: run.recovery,
+          candidates,
+          deadEnd: candidates.length === 0 && !space.hasMainContent(),
         });
         if ("stop" in recovery) {
           record(run, "BLOCKED", null, "BLOCKED", decision.confidence, latencyMs);
           return await stop("blocked", run, `${recovery.reason}. Use screenshot computer use on this page.`);
         }
-        const action = space.resolve(recovery.operation, null);
+        let action: SnapshotAction | undefined;
+        let target: string | null = null;
+        if (recovery.operation === "CLICK") {
+          run.recovery.candidates.add(recovery.candidate.node);
+          action = space.resolve("CLICK", recovery.candidate.index);
+          target = recovery.candidate.index;
+        } else {
+          action = space.resolve(recovery.operation, null);
+        }
         if (!action) {
           record(run, "BLOCKED", null, "BLOCKED", decision.confidence, latencyMs);
           return await stop("blocked", run, "Jev could not progress on this page. Use screenshot computer use.");
         }
         run.stats.recoveries += 1;
         const outcome = await perform(run, action, undefined, recovery.reason);
-        record(run, recovery.operation, null, recovery.operation, decision.confidence, latencyMs, outcome, recovery.reason);
+        const execute = target ? `${recovery.operation} [${target}]` : recovery.operation;
+        record(run, recovery.operation, target, execute, decision.confidence, latencyMs, outcome, recovery.reason);
         run.step += 1;
         continue;
       }

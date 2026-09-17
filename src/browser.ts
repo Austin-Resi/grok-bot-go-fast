@@ -119,10 +119,19 @@ export class FastBrowser {
     return this.navigations > 0;
   }
 
-  async back(): Promise<void> {
+  /**
+   * History back. A hung or refused history navigation is a failed step, not a
+   * dead run: it surfaces as StalePage so the loop records it and continues.
+   */
+  async back(timeoutMs = 20_000): Promise<void> {
     const page = this.requirePage();
     await this.focus();
-    await page.goBack({ waitUntil: "domcontentloaded", timeout: 20_000 });
+    try {
+      await page.goBack({ waitUntil: "domcontentloaded", timeout: timeoutMs });
+    } catch (error) {
+      this.wentBack = false;
+      throw new StalePage(`Back navigation did not complete: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
+    }
     this.navigations = Math.max(0, this.navigations - 1);
   }
 

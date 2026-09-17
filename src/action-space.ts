@@ -65,6 +65,18 @@ export interface ActionSpace {
   dismissFor(tried: ReadonlySet<number>): DismissCandidate | undefined;
   /** Whether the page can scroll further down / up right now. */
   canScroll(direction: "down" | "up"): boolean;
+  /** Offscreen click candidates in rank order, with their element index. */
+  offscreenCandidates(): OffscreenCandidate[];
+  /** Any control (viewport or offscreen) sits in main content. */
+  hasMainContent(): boolean;
+}
+
+export interface OffscreenCandidate {
+  index: string;
+  node: number;
+  label: string;
+  score: number;
+  action: SnapshotAction;
 }
 
 export function overlayKey(id: number): string {
@@ -83,6 +95,8 @@ export function actionSpace(
   const controls = new Map<string, SnapshotAction>();
   const dismissals: DismissCandidate[] = [];
   const overlays = new Map<number, OpenOverlay>();
+  const offscreen: OffscreenCandidate[] = [];
+  let mainContent = false;
 
   for (const action of page.actions) {
     const operation = KIND_TO_OPERATION[action.kind];
@@ -109,7 +123,10 @@ export function actionSpace(
       if (action.expanded != null) element.expanded = action.expanded === true || action.expanded === "true";
       if (action.kind === "select") element.options = [];
       if (action.offscreen) element.offscreen = action.offscreen;
-      if (action.main) element.main = true;
+      if (action.main) {
+        element.main = true;
+        mainContent = true;
+      }
       if (action.href) element.href = action.href;
       if (action.overlay != null) {
         element.overlay = overlayKey(action.overlay);
@@ -134,6 +151,9 @@ export function actionSpace(
       group[index] = action;
       if (action.kind === "click" && action.dismiss && action.overlay != null) {
         dismissals.push({ action, index, overlay: action.overlay });
+      }
+      if (action.kind === "click" && action.offscreen) {
+        offscreen.push({ index, node, label: element.label, score: action.score ?? 0, action });
       }
     }
   }
@@ -165,6 +185,12 @@ export function actionSpace(
     },
     canScroll(direction) {
       return controls.has(direction === "down" ? "SCROLL_DOWN" : "SCROLL_UP");
+    },
+    offscreenCandidates() {
+      return [...offscreen].sort((a, b) => b.score - a.score);
+    },
+    hasMainContent() {
+      return mainContent;
     },
   };
 }
