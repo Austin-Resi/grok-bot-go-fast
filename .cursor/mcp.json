@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "jev": {
+      "command": "npx",
+      "args": ["--yes", "tsx", "./src/index.ts"],
+      "env": {
+        "AI_GATEWAY_API_KEY": "${AI_GATEWAY_API_KEY}"
+      }
+    }
+  }
+}

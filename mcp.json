@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "jev": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["--yes", "tsx", "./src/index.ts"],
+      "env": {
+        "AI_GATEWAY_API_KEY": "${AI_GATEWAY_API_KEY}"
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "jev",
+  "description": "TypeSafe Jev through Vercel AI Gateway. Fast structured decisions and screenshot-free UI action selection for Grok Bot computer use.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Austin Lucas"
+  },
+  "license": "MIT",
+  "keywords": ["grok-bot", "jev", "typesafe", "ai-gateway", "computer-use"]
+}

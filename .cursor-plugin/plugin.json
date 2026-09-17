@@ -1,0 +1,13 @@
+{
+  "name": "jev",
+  "version": "0.1.0",
+  "description": "TypeSafe Jev through Vercel AI Gateway. Fast structured decisions and screenshot-free UI action selection.",
+  "author": {
+    "name": "Austin Lucas"
+  },
+  "homepage": "https://vercel.com/ai-gateway/models/jev",
+  "license": "MIT",
+  "keywords": ["jev", "typesafe", "ai-gateway", "computer-use"],
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

@@ -1,0 +1,27 @@
+{
+  "name": "jev",
+  "version": "0.1.0",
+  "description": "TypeSafe Jev through Vercel AI Gateway. Fast structured decisions and screenshot-free UI action selection for Grok Bot.",
+  "author": {
+    "name": "Austin Lucas"
+  },
+  "homepage": "https://vercel.com/ai-gateway/models/jev",
+  "license": "MIT",
+  "keywords": ["jev", "typesafe", "ai-gateway", "computer-use"],
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json",
+  "interface": {
+    "displayName": "Jev (AI Gateway)",
+    "shortDescription": "Use TypeSafe Jev via Vercel AI Gateway instead of slow screenshot computer use.",
+    "longDescription": "Runs the jev-ultrafast loop on the Bot computer: snapshot live DOM nodes, ask TypeSafe Jev on Vercel AI Gateway (typesafe-ai/jev), click that node. Call fast_web_task instead of screenshot computer use. On TYPE_TEXT, write the string and call fast_web_fill. Requires AI_GATEWAY_API_KEY and Playwright Chromium.",
+    "developerName": "Austin Lucas",
+    "category": "Productivity",
+    "capabilities": ["Read"],
+    "websiteURL": "https://vercel.com/ai-gateway/models/jev",
+    "defaultPrompt": [
+      "Use fast_web_task for web work. Do not screenshot-click.",
+      "If status is need_text, write the field value from the goal and call fast_web_fill.",
+      "Open example.com with fast_web_task and stop when the heading is visible."
+    ]
+  }
+}
