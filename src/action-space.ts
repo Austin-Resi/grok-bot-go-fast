@@ -1,4 +1,4 @@
-import type { ChooseUiActionInput, RecentAction, UiElement } from "./choose-ui-action.ts";
+import type { ChooseUiActionInput, OpenOverlay, RecentAction, UiElement } from "./choose-ui-action.ts";
 
 export interface SnapshotAction {
   id: string;
@@ -12,6 +12,10 @@ export interface SnapshotAction {
   selected?: string | boolean;
   expanded?: string | boolean;
   delta?: number;
+  /** Node id of the dialog/banner that contains this control. */
+  overlay?: number;
+  /** This control closes or dismisses its overlay. */
+  dismiss?: boolean;
 }
 
 export interface ObservedPage {
@@ -20,6 +24,13 @@ export interface ObservedPage {
   text: string;
   actions: SnapshotAction[];
   omitted_actions?: number;
+  covered_actions?: number;
+}
+
+export interface DismissCandidate {
+  action: SnapshotAction;
+  index: string;
+  overlay: number;
 }
 
 const KIND_TO_OPERATION: Record<string, string> = {
@@ -31,6 +42,12 @@ const KIND_TO_OPERATION: Record<string, string> = {
 export interface ActionSpace {
   input: ChooseUiActionInput;
   resolve(operation: string, target: string | null): SnapshotAction | undefined;
+  /** First dismiss control of an open overlay that has not already been tried. */
+  dismissFor(tried: ReadonlySet<number>): DismissCandidate | undefined;
+}
+
+export function overlayKey(id: number): string {
+  return `overlay-${id}`;
 }
 
 export function actionSpace(
@@ -42,6 +59,8 @@ export function actionSpace(
   const indices = new Map<number, string>();
   const targets: Record<string, Record<string, SnapshotAction>> = {};
   const controls = new Map<string, SnapshotAction>();
+  const dismissals: DismissCandidate[] = [];
+  const overlays = new Map<number, OpenOverlay>();
 
   for (const action of page.actions) {
     const operation = KIND_TO_OPERATION[action.kind];
@@ -65,6 +84,15 @@ export function actionSpace(
       if (action.selected != null) element.selected = action.selected === true || action.selected === "true";
       if (action.expanded != null) element.expanded = action.expanded === true || action.expanded === "true";
       if (action.kind === "select") element.options = [];
+      if (action.overlay != null) {
+        element.overlay = overlayKey(action.overlay);
+        const overlay = overlays.get(action.overlay) ?? { id: element.overlay, dismiss_controls: [] };
+        overlays.set(action.overlay, overlay);
+        if (action.dismiss) {
+          element.dismiss = true;
+          overlay.dismiss_controls.push(`[${index}] ${element.label}`);
+        }
+      }
       elements.push(element);
     }
     const index = indices.get(node)!;
@@ -77,6 +105,9 @@ export function actionSpace(
       group[optionIndex] = action;
     } else {
       group[index] = action;
+      if (action.kind === "click" && action.dismiss && action.overlay != null) {
+        dismissals.push({ action, index, overlay: action.overlay });
+      }
     }
   }
 
@@ -90,6 +121,7 @@ export function actionSpace(
       elements,
       recentActions,
       extraOperations,
+      overlays: [...overlays.values()],
     },
     resolve(operation, target) {
       if (operation === "WAIT") return controls.get("WAIT") ?? page.actions.find((a) => a.kind === "wait");
@@ -97,6 +129,9 @@ export function actionSpace(
       if (operation === "SCROLL_UP") return controls.get("SCROLL_UP") ?? page.actions.find((a) => a.id === "scroll_up");
       if (!target) return undefined;
       return targets[operation]?.[target];
+    },
+    dismissFor(tried) {
+      return dismissals.find((candidate) => !tried.has(candidate.overlay));
     },
   };
 }

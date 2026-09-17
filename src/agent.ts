@@ -1,11 +1,11 @@
-import { actionSpace, type ObservedPage, type SnapshotAction } from "./action-space.ts";
+import { actionSpace, type ActionSpace, type ObservedPage, type SnapshotAction } from "./action-space.ts";
 import { FastBrowser, StalePage } from "./browser.ts";
 import { buildUiActionQuestions } from "./choose-ui-action.ts";
 import type { RecentAction } from "./choose-ui-action.ts";
 import { evaluateWithGateway } from "./evaluate.ts";
 import { fieldText } from "./fill-text.ts";
 import { resolveUiDecision } from "./format.ts";
-import { MAX_STEPS } from "./questions.ts";
+import { MAX_RUN_MS, MAX_STEPS } from "./questions.ts";
 
 export type FillMode = "bot" | "helper";
 
@@ -13,6 +13,7 @@ export interface FastWebTaskInput {
   url?: string;
   goal: string;
   maxSteps?: number;
+  maxMs?: number;
   fillMode?: FillMode;
   keepOpen?: boolean;
   reuseBrowser?: boolean;
@@ -27,6 +28,7 @@ export interface FastWebStep {
   url: string;
   latencyMs: number;
   confidence: number | null;
+  note?: string;
 }
 
 export interface NeedTextField {
@@ -48,6 +50,8 @@ export interface FastWebTaskResult {
   goal?: string;
   open?: boolean;
   attached?: boolean;
+  attachedTo?: string;
+  display?: string;
 }
 
 interface PendingFill {
@@ -63,6 +67,8 @@ interface Run {
   browser: FastBrowser;
   goal: string;
   maxSteps: number;
+  maxMs: number;
+  deadline: number;
   fillMode: FillMode;
   step: number;
   page: ObservedPage;
@@ -71,13 +77,23 @@ interface Run {
   started: number;
   pending: PendingFill | undefined;
   keepOpen: boolean | undefined;
+  /** Overlays whose dismiss control the loop already clicked on its own. */
+  dismissTried: Set<number>;
 }
 
 let active: Run | undefined;
 
+function runBudgetMs(input: FastWebTaskInput): number {
+  const env = Number(process.env.JEV_MAX_RUN_MS);
+  const fallback = Number.isFinite(env) && env > 0 ? env : MAX_RUN_MS;
+  const requested = input.maxMs ?? fallback;
+  return Math.min(Math.max(requested, 1_000), fallback);
+}
+
 export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWebTaskResult> {
   const fillMode = input.fillMode ?? "bot";
   const maxSteps = Math.min(input.maxSteps ?? MAX_STEPS, MAX_STEPS);
+  const maxMs = runBudgetMs(input);
 
   if (input.reuseBrowser) {
     const run = active;
@@ -92,13 +108,16 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
       run.page = await run.browser.observe();
       run.goal = input.goal;
       run.maxSteps = maxSteps;
+      run.maxMs = maxMs;
       run.fillMode = fillMode;
       run.keepOpen = input.keepOpen ?? run.keepOpen;
       run.step = 1;
       run.history = [];
       run.steps = [];
       run.started = performance.now();
+      run.deadline = run.started + maxMs;
       run.pending = undefined;
+      run.dismissTried = new Set();
       return await advanceActive();
     } catch (error) {
       await abortFastWebTask();
@@ -114,18 +133,22 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
   try {
     await browser.open(url);
     const page = await browser.observe();
+    const started = performance.now();
     active = {
       browser,
       goal: input.goal,
       maxSteps,
+      maxMs,
+      deadline: started + maxMs,
       fillMode,
       step: 1,
       page,
       history: [],
       steps: [],
-      started: performance.now(),
+      started,
       pending: undefined,
       keepOpen: input.keepOpen,
+      dismissTried: new Set(),
     };
     return await advanceActive();
   } catch (error) {
@@ -141,7 +164,14 @@ export async function fillFastWebTask(text: string): Promise<FastWebTaskResult> 
   }
   const value = text.trim();
   if (!value || value.length > 2000) throw new Error("Provide the exact field string to type.");
-  await applyFill(run, value);
+  // Time spent waiting for the Bot to write the string is not the loop's budget.
+  run.deadline = performance.now() + run.maxMs;
+  try {
+    await applyFill(run, value);
+  } catch (error) {
+    await abortFastWebTask();
+    throw error;
+  }
   return await advanceActive();
 }
 
@@ -151,25 +181,43 @@ export async function abortFastWebTask(): Promise<void> {
   await run?.browser.close();
 }
 
+/**
+ * Execute one action and re-observe. Returns false when the target was covered
+ * or gone; that attempt is recorded in history so Jev does not pick it again.
+ */
+async function perform(run: Run, action: SnapshotAction, text?: string, note?: string): Promise<boolean> {
+  const before = run.page;
+  try {
+    await run.browser.act(action, text);
+  } catch (error) {
+    if (!(error instanceof StalePage)) throw error;
+    run.page = await run.browser.observe();
+    run.history.push({
+      action: action.label,
+      kind: action.kind,
+      text,
+      pageChanged: false,
+      failed: "target was covered or removed before it could be used; it is not offered again",
+      note,
+    });
+    return false;
+  }
+  run.page = await run.browser.observe();
+  run.history.push({
+    action: action.label,
+    kind: action.kind,
+    text,
+    pageChanged: run.page.url !== before.url || run.page.text !== before.text,
+    note,
+  });
+  return true;
+}
+
 async function applyFill(run: Run, text: string): Promise<void> {
   const pending = run.pending;
   if (!pending) return;
-  try {
-    await run.browser.act(pending.action, text);
-  } catch (error) {
-    if (!(error instanceof StalePage)) throw error;
-    run.pending = undefined;
-    run.page = await run.browser.observe();
-    return;
-  }
-  const before = run.page;
-  run.page = await run.browser.observe();
-  run.history.push({
-    action: pending.action.label,
-    kind: pending.action.kind,
-    text,
-    pageChanged: run.page.url !== before.url || run.page.text !== before.text,
-  });
+  run.pending = undefined;
+  const ok = await perform(run, pending.action, text);
   run.steps.push({
     step: run.step,
     operation: pending.operation,
@@ -179,9 +227,41 @@ async function applyFill(run: Run, text: string): Promise<void> {
     url: run.page.url,
     latencyMs: pending.latencyMs,
     confidence: pending.confidence,
+    note: ok ? undefined : "field was covered; nothing typed",
   });
   run.step += 1;
-  run.pending = undefined;
+}
+
+/**
+ * Jev chose TYPE_TEXT outside an open overlay that still has an untried dismiss
+ * control. Click that control instead. Pausing for need_text under a banner
+ * freezes the page with the banner up; the Bot then fills into a covered field.
+ */
+async function dismissBeforeTyping(
+  run: Run,
+  space: ActionSpace,
+  action: SnapshotAction,
+  confidence: number | null,
+  latencyMs: number,
+): Promise<boolean> {
+  if (action.kind !== "fill" || action.overlay != null) return false;
+  const candidate = space.dismissFor(run.dismissTried);
+  if (!candidate) return false;
+  run.dismissTried.add(candidate.overlay);
+  const note = `dismissed overlay before TYPE_TEXT into "${action.label}"`;
+  await perform(run, candidate.action, undefined, note);
+  run.steps.push({
+    step: run.step,
+    operation: "CLICK",
+    target: candidate.index,
+    execute: `CLICK [${candidate.index}]`,
+    url: run.page.url,
+    latencyMs,
+    confidence,
+    note,
+  });
+  run.step += 1;
+  return true;
 }
 
 async function advanceActive(): Promise<FastWebTaskResult> {
@@ -190,6 +270,10 @@ async function advanceActive(): Promise<FastWebTaskResult> {
 
   try {
     while (run.step <= run.maxSteps) {
+      if (performance.now() >= run.deadline) {
+        return await stop("budget", run, `Stopped after ${Math.round(run.maxMs / 1000)}s of wall-clock time`);
+      }
+
       const space = actionSpace(run.page, run.goal, run.history);
       const built = buildUiActionQuestions(space.input);
       const started = performance.now();
@@ -223,6 +307,8 @@ async function advanceActive(): Promise<FastWebTaskResult> {
       const action = space.resolve(decision.operation, decision.target);
       if (!action) return await stop("blocked", run, `No live node for ${execute}`);
 
+      if (await dismissBeforeTyping(run, space, action, decision.confidence, latencyMs)) continue;
+
       if (action.kind === "fill") {
         run.pending = {
           action,
@@ -243,22 +329,17 @@ async function advanceActive(): Promise<FastWebTaskResult> {
         continue;
       }
 
-      try {
-        await run.browser.act(action);
-      } catch (error) {
-        if (!(error instanceof StalePage)) throw error;
-        run.page = await run.browser.observe();
-        continue;
-      }
-
-      const before = run.page;
-      run.page = await run.browser.observe();
-      run.history.push({
-        action: action.label,
-        kind: action.kind,
-        pageChanged: run.page.url !== before.url || run.page.text !== before.text,
-      });
-      record(run, decision.operation, decision.target, execute, decision.confidence, latencyMs, run.page.url);
+      const ok = await perform(run, action);
+      record(
+        run,
+        decision.operation,
+        decision.target,
+        execute,
+        decision.confidence,
+        latencyMs,
+        run.page.url,
+        ok ? undefined : "target was covered; not clicked",
+      );
       run.step += 1;
     }
 
@@ -277,6 +358,7 @@ function record(
   confidence: number | null,
   latencyMs: number,
   url = run.page.url,
+  note?: string,
 ): void {
   run.steps.push({
     step: run.step,
@@ -286,6 +368,7 @@ function record(
     url,
     latencyMs,
     confidence,
+    note,
   });
 }
 
@@ -298,6 +381,8 @@ function snapshot(run: Run): Omit<FastWebTaskResult, "status"> {
     elapsedMs: Math.round(performance.now() - run.started),
     goal: run.goal,
     attached: run.browser.attached,
+    attachedTo: run.browser.attachedTo,
+    display: process.env.DISPLAY || undefined,
   };
 }
 

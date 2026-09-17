@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,73 @@ import { join } from "node:path";
 export interface DevToolsActivePort {
   port: number;
   path: string;
+}
+
+export interface ChromeProcess {
+  pid: number;
+  args: string;
+  userDataDir?: string;
+}
+
+export interface CdpAttachment {
+  url: string;
+  /** Profile directory whose DevToolsActivePort was used, when known. */
+  profileDir?: string;
+  /** X display the discovery was scoped to, when known. */
+  display?: string;
+}
+
+/**
+ * Browser (non-child) Chrome/Chromium processes from `ps -eo pid=,args=`.
+ * Renderer/GPU children carry --type=... and are skipped.
+ */
+export function parseChromeProcesses(psOutput: string): ChromeProcess[] {
+  const processes: ChromeProcess[] = [];
+  for (const line of psOutput.split("\n")) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (!match) continue;
+    const args = match[2];
+    if (!/chrom(e|ium)/i.test(args) || /--type=/.test(args)) continue;
+    if (/^(\S*\/)?(grep|rg|node|tsx|npx)\b/.test(args)) continue;
+    processes.push({ pid: Number(match[1]), args, userDataDir: parseUserDataDirs(args)[0] });
+  }
+  return processes;
+}
+
+/** DISPLAY from a process environment. Linux only; undefined elsewhere or when unreadable. */
+export function readProcessDisplay(pid: number): string | undefined {
+  try {
+    const environ = readFileSync(`/proc/${pid}/environ`, "latin1");
+    for (const entry of environ.split("\0")) {
+      if (entry.startsWith("DISPLAY=")) return entry.slice("DISPLAY=".length);
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Keep only Chromes running on `display`. A process whose environment cannot be
+ * read is excluded: attaching to an unknown display is exactly the failure mode
+ * this guards against.
+ */
+export function scopeToDisplay(
+  processes: ChromeProcess[],
+  display: string,
+  readDisplay: (pid: number) => string | undefined = readProcessDisplay,
+): ChromeProcess[] {
+  const wanted = normalizeDisplay(display);
+  return processes.filter((process) => {
+    const actual = readDisplay(process.pid);
+    return actual != null && normalizeDisplay(actual) === wanted;
+  });
+}
+
+/** ":14", ":14.0", "localhost:14", "unix:14" all mean display 14. */
+export function normalizeDisplay(display: string): string {
+  const match = /:(\d+)(?:\.\d+)?$/.exec(display.trim());
+  return match ? `:${match[1]}` : display.trim();
 }
 
 export function parseRemoteDebuggingPort(processArgs: string): number | undefined {
@@ -107,49 +174,90 @@ export function probePort(port: number, host = "127.0.0.1", timeoutMs = 400): Pr
   });
 }
 
-function processArgs(): string {
+function processTable(): string {
   try {
-    return execFileSync("ps", ["-eo", "args="], {
+    return execFileSync("ps", ["-eo", "pid=,args="], {
       encoding: "utf8",
       timeout: 2000,
-      maxBuffer: 2_000_000,
+      maxBuffer: 4_000_000,
     });
   } catch {
     return "";
   }
 }
 
-async function discoverFromProfiles(dirs: string[]): Promise<string | undefined> {
+async function discoverFromProfiles(dirs: string[]): Promise<{ url: string; profileDir: string } | undefined> {
   for (const dir of dirs) {
     const active = readDevToolsActivePort(dir);
-    if (active && (await probePort(active.port))) return devToolsEndpoint(active);
+    if (active && (await probePort(active.port))) return { url: devToolsEndpoint(active), profileDir: dir };
   }
   return undefined;
 }
 
-async function discoverFromHttp(port: number | undefined): Promise<string | undefined> {
-  const candidates = [...new Set([...(port ? [cdpEndpoint(port)] : []), cdpEndpoint(9222)])];
-  for (const url of candidates) {
+async function discoverFromHttp(ports: number[]): Promise<string | undefined> {
+  for (const port of new Set(ports)) {
+    const url = cdpEndpoint(port);
     if (await probeCdp(url)) return url;
   }
   return undefined;
 }
 
-export async function discoverCdpUrl(): Promise<string | undefined> {
+/**
+ * Find the Chrome this agent should drive.
+ *
+ * Order: CDP_URL → JEV_CDP_PROFILE_DIR → Chromes on this DISPLAY (Linux, via
+ * /proc/<pid>/environ) → all Chromes when no DISPLAY scoping is possible.
+ * When DISPLAY is set and no Chrome on it exposes DevTools, returns undefined
+ * so the caller launches its own browser on this display rather than driving
+ * another agent's session.
+ */
+export async function discoverCdp(): Promise<CdpAttachment | undefined> {
   const explicit = process.env.CDP_URL?.trim();
   if (explicit) {
-    if (isWebSocketUrl(explicit)) return explicit;
+    if (isWebSocketUrl(explicit)) return { url: explicit };
     if (!(await probeCdp(explicit, 1500))) {
       throw new Error(
         `CDP_URL ${explicit} did not answer /json/version. Chrome 144+ enabled via chrome://inspect/#remote-debugging exposes only a WebSocket endpoint; use the ws:// URL from <profile>/DevToolsActivePort, or unset CDP_URL and let Jev read that file.`,
       );
     }
-    return explicit;
+    return { url: explicit };
   }
 
   if (process.env.JEV_CDP_DISCOVER === "false") return undefined;
 
-  const args = processArgs();
-  const profiles = [...new Set([...parseUserDataDirs(args), ...defaultProfileDirs()])];
-  return (await discoverFromProfiles(profiles)) ?? (await discoverFromHttp(parseRemoteDebuggingPort(args)));
+  const pinned = process.env.JEV_CDP_PROFILE_DIR?.trim();
+  if (pinned) {
+    const found = await discoverFromProfiles([pinned]);
+    if (!found) {
+      throw new Error(
+        `JEV_CDP_PROFILE_DIR ${pinned} has no live DevToolsActivePort. Enable chrome://inspect/#remote-debugging in that Chrome, or unset the variable.`,
+      );
+    }
+    return found;
+  }
+
+  const display = process.env.JEV_CDP_DISPLAY?.trim() || process.env.DISPLAY?.trim() || undefined;
+  const all = parseChromeProcesses(processTable());
+  const canScope = display != null && existsSync("/proc");
+  const scoped = canScope ? scopeToDisplay(all, display) : all;
+
+  const profiles = new Set<string>();
+  for (const process of scoped) if (process.userDataDir) profiles.add(process.userDataDir);
+  // Default profile dirs only when a matching Chrome runs without --user-data-dir,
+  // or when we cannot scope at all (single-user macOS/Windows).
+  if (!canScope || scoped.some((process) => !process.userDataDir)) {
+    for (const dir of defaultProfileDirs()) profiles.add(dir);
+  }
+
+  const fromProfiles = await discoverFromProfiles([...profiles]);
+  if (fromProfiles) return { ...fromProfiles, display };
+
+  const ports = scoped.map((process) => parseRemoteDebuggingPort(process.args)).filter((p): p is number => p != null);
+  if (!canScope) ports.push(9222);
+  const url = await discoverFromHttp(ports);
+  return url ? { url, display } : undefined;
+}
+
+export async function discoverCdpUrl(): Promise<string | undefined> {
+  return (await discoverCdp())?.url;
 }

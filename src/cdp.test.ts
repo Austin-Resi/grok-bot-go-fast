@@ -11,11 +11,26 @@ import {
   devToolsEndpoint,
   discoverCdpUrl,
   isWebSocketUrl,
+  normalizeDisplay,
+  parseChromeProcesses,
   parseRemoteDebuggingPort,
   parseUserDataDirs,
   probePort,
   readDevToolsActivePort,
+  scopeToDisplay,
 } from "./cdp.ts";
+
+const MULTI_AGENT_PS = [
+  "  411 /opt/google/chrome/chrome --user-data-dir=/home/bot/chrome-profile-5 --remote-debugging-port=0",
+  "  412 /opt/google/chrome/chrome --type=renderer --user-data-dir=/home/bot/chrome-profile-5",
+  "  520 /opt/google/chrome/chrome --user-data-dir=/home/bot/chrome-profile-10 --remote-debugging-port=0",
+  "  777 /opt/google/chrome/chrome --user-data-dir=/home/bot/chrome-profile-14 --remote-debugging-port=0",
+  "  778 /opt/google/chrome/chrome --type=gpu-process --user-data-dir=/home/bot/chrome-profile-14",
+  "  900 node /home/bot/jev/node_modules/.bin/tsx src/index.ts",
+  "  901 grep chrome",
+].join("\n");
+
+const DISPLAY_BY_PID: Record<number, string | undefined> = { 411: ":5", 520: ":10", 777: ":14.0" };
 
 test("parseRemoteDebuggingPort reads a live port", () => {
   const args = "/usr/bin/google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/bot";
@@ -36,6 +51,34 @@ test("parseUserDataDirs collects every Chrome profile in ps output", () => {
     "node server.js",
   ].join("\n");
   assert.deepEqual(parseUserDataDirs(args), ["/home/bot/.config/google-chrome", "/tmp/with space/profile"]);
+});
+
+test("parseChromeProcesses keeps browser processes only", () => {
+  const procs = parseChromeProcesses(MULTI_AGENT_PS);
+  assert.deepEqual(
+    procs.map((p) => [p.pid, p.userDataDir]),
+    [
+      [411, "/home/bot/chrome-profile-5"],
+      [520, "/home/bot/chrome-profile-10"],
+      [777, "/home/bot/chrome-profile-14"],
+    ],
+  );
+});
+
+test("scopeToDisplay keeps only this agent's Chrome and drops unknown displays", () => {
+  const procs = parseChromeProcesses(MULTI_AGENT_PS);
+  const read = (pid: number) => DISPLAY_BY_PID[pid];
+  assert.deepEqual(scopeToDisplay(procs, ":14", read).map((p) => p.userDataDir), ["/home/bot/chrome-profile-14"]);
+  assert.deepEqual(scopeToDisplay(procs, ":10", read).map((p) => p.userDataDir), ["/home/bot/chrome-profile-10"]);
+  assert.deepEqual(scopeToDisplay(procs, ":9", read), []);
+  assert.deepEqual(scopeToDisplay(procs, ":14", () => undefined), [], "unreadable environ is never a match");
+});
+
+test("normalizeDisplay treats screen suffixes and hosts as the same display", () => {
+  assert.equal(normalizeDisplay(":14"), ":14");
+  assert.equal(normalizeDisplay(":14.0"), ":14");
+  assert.equal(normalizeDisplay("localhost:14.0"), ":14");
+  assert.equal(normalizeDisplay("unix:14"), ":14");
 });
 
 test("defaultProfileDirs covers linux, mac, and windows", () => {

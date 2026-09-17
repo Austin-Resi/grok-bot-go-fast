@@ -55,7 +55,13 @@ fast_web_task({ reuseBrowser: true, goal: "..." })
 
 A new `fast_web_task` with a `url` and no `reuseBrowser` replaces the session. `keepOpen` overrides the default in either direction.
 
-If the result has `attached: true`, this is the Bot's Chrome (shared cookies). Do not quit Chrome. On `blocked`, use screenshot computer use on the **same** `url` — the tab is already in front.
+If the result has `attached: true`, this is your Chrome on your `display` (shared cookies; `attachedTo` names the profile). Do not quit Chrome. On `blocked`, use screenshot computer use on the **same** `url` — the tab is already in front.
+
+## Dialogs, banners, cookie walls
+
+The tool handles these. Controls hidden under a modal are never offered to Jev, and if Jev wants to type into a field while a dismissible banner is open, the tool clicks the banner's Close / No thanks / I already donated control first (a step with `note: "dismissed overlay…"`). You never get `need_text` for a covered field. If a page returns `blocked` with an overlay still up (CAPTCHA, unlabeled close icon), dismiss it with screenshot computer use, then `fast_web_task({ reuseBrowser: true, goal })`.
+
+Each call returns within ~45s (`status: "budget"`, tab open). Continue with `reuseBrowser: true`; that is a normal path, not a failure.
 
 `fillMode: "helper"` is optional: a small Gateway chat model invents the string instead of asking you.
 

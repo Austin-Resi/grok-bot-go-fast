@@ -1,4 +1,4 @@
-import { MAX_CHOICE_OPTIONS, NEXT_ACTION, TARGET } from "./questions.ts";
+import { MAX_CHOICE_OPTIONS, NEXT_ACTION, OVERLAY_OPEN, TARGET } from "./questions.ts";
 
 export interface UiElement {
   index: string;
@@ -14,6 +14,10 @@ export interface UiElement {
     label: string;
     value?: string;
   }>;
+  /** Id of the open dialog/banner containing this control. */
+  overlay?: string;
+  /** This control closes its overlay. */
+  dismiss?: boolean;
 }
 
 export interface RecentAction {
@@ -21,6 +25,10 @@ export interface RecentAction {
   kind?: string;
   text?: string;
   pageChanged?: boolean;
+  /** Why the action did not execute (target covered or gone). */
+  failed?: string;
+  /** Why the loop chose this action itself instead of Jev's pick. */
+  note?: string;
 }
 
 export interface PageState {
@@ -29,12 +37,18 @@ export interface PageState {
   text?: string;
 }
 
+export interface OpenOverlay {
+  id: string;
+  dismiss_controls: string[];
+}
+
 export interface ChooseUiActionInput {
   goal: string;
   page: PageState;
   elements: UiElement[];
   recentActions?: RecentAction[];
   extraOperations?: Record<string, string>;
+  overlays?: OpenOverlay[];
 }
 
 export interface ChoiceQuestion {
@@ -48,6 +62,7 @@ export interface UiActionQuestions {
     page: PageState;
     elements: UiElement[];
     recent_actions: RecentAction[];
+    open_overlays: OpenOverlay[];
   };
   questions: Record<string, ChoiceQuestion>;
   truncated: boolean;
@@ -104,6 +119,8 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
           checked: element.checked,
           selected: element.selected,
           expanded: element.expanded,
+          in_overlay: element.overlay,
+          dismisses_overlay: element.dismiss,
         };
       }
     }
@@ -116,10 +133,14 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
   const operationCap = capCriteria(operations, MAX_CHOICE_OPTIONS);
   truncated = truncated || operationCap.truncated;
 
+  const overlays = input.overlays ?? [];
+  const hasDismissibleOverlay = overlays.some((overlay) => overlay.dismiss_controls.length > 0);
+  const rules = hasDismissibleOverlay ? [NEXT_ACTION, OVERLAY_OPEN] : NEXT_ACTION;
+
   const questions: Record<string, ChoiceQuestion> = {
     operation: {
       type: "choice",
-      instructions: { goal: input.goal, rules: NEXT_ACTION },
+      instructions: { goal: input.goal, rules },
       criteria: operationCap.criteria,
     },
   };
@@ -132,7 +153,7 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
       instructions: {
         goal: input.goal,
         operation,
-        rules: [NEXT_ACTION, TARGET],
+        rules: hasDismissibleOverlay ? [NEXT_ACTION, OVERLAY_OPEN, TARGET] : [NEXT_ACTION, TARGET],
       },
       criteria: targetCap.criteria,
     };
@@ -143,6 +164,7 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
       page: input.page,
       elements: input.elements,
       recent_actions: input.recentActions ?? [],
+      open_overlays: overlays,
     },
     questions,
     truncated,

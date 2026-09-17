@@ -32,6 +32,28 @@ describe("buildUiActionQuestions", () => {
     assert.ok(built.questions.click_target);
     assert.ok(built.questions.type_text_target);
     assert.equal(built.truncated, false);
+    assert.deepEqual(built.state.open_overlays, []);
+    assert.equal(typeof built.questions.operation.instructions, "object");
+    assert.equal(Array.isArray((built.questions.operation.instructions as { rules: unknown }).rules), false);
+  });
+
+  it("adds the overlay rule and marks dismiss targets when a dismissible overlay is open", () => {
+    const built = buildUiActionQuestions({
+      goal: "Search Packers",
+      page: { url: "https://www.wikipedia.org" },
+      elements: [
+        { index: "1", role: "searchbox", label: "Search Wikipedia", operations: ["TYPE_TEXT", "CLICK"] },
+        { index: "2", role: "button", label: "Close", operations: ["CLICK"], overlay: "overlay-40", dismiss: true },
+      ],
+      overlays: [{ id: "overlay-40", dismiss_controls: ["[2] Close"] }],
+    });
+
+    const rules = (built.questions.operation.instructions as { rules: string[] }).rules;
+    assert.ok(Array.isArray(rules) && rules.length === 2 && /dismiss/i.test(rules[1]));
+    assert.deepEqual(built.state.open_overlays, [{ id: "overlay-40", dismiss_controls: ["[2] Close"] }]);
+    const closeTarget = built.questions.click_target.criteria["2"] as Record<string, unknown>;
+    assert.equal(closeTarget.in_overlay, "overlay-40");
+    assert.equal(closeTarget.dismisses_overlay, true);
   });
 });
 

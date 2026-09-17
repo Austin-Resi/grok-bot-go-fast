@@ -29,13 +29,28 @@ Chrome 144+ can turn this on at runtime, no relaunch or flags needed. Ask the Bo
 2. Run `cat ~/.config/google-chrome/DevToolsActivePort` (Linux) or `cat ~/Library/Application\ Support/Google/Chrome/DevToolsActivePort` (macOS). Two lines: a port and a `/devtools/browser/<id>` path. If the profile lives elsewhere, `ps -eo args | grep -o -- '--user-data-dir=[^ ]*'` shows the directory.
 3. Start `fast_web_task`. Chrome shows a permission dialog the first time Jev connects; the Bot clicks **Allow**. Jev keeps one connection open across tasks, so this happens once per Chrome session.
 
-Leave `CDP_URL` unset. Jev reads `DevToolsActivePort` from every `--user-data-dir` in `ps` plus the default Chrome/Chromium profile dirs, confirms the port is listening, and connects to `ws://127.0.0.1:<port><path>`. It also falls back to `--remote-debugging-port=<n>` / `http://127.0.0.1:9222` for Chrome launched with the legacy flag. If neither is present, Jev launches its own Chromium.
+Leave `CDP_URL` unset. Jev finds Chrome browser processes in `ps`, reads each one's `DISPLAY` from `/proc/<pid>/environ`, and keeps only those on **this agent's** `DISPLAY` (the one the MCP server inherits, which is the Computer view). From those it reads `DevToolsActivePort`, confirms the port is listening, and connects to `ws://127.0.0.1:<port><path>`. On a multi-agent box with many `chrome-profile-*` on `:5`, `:9`, `:14`, … it will only ever attach to the Chrome on your display. If no Chrome on this display exposes DevTools, Jev does **not** fall back to another agent's Chrome; it launches its own headed Chromium on this `DISPLAY` so the page still shows in your Computer view.
 
-Do not `curl /json/version` to check: the `chrome://inspect` flow exposes only the WebSocket endpoint and returns 404 there. If you pin `CDP_URL`, use the full `ws://` URL from `DevToolsActivePort` (it changes on every Chrome restart), not `http://`.
+The result reports `attached`, `attachedTo` (profile dir) and `display` so you can confirm which Chrome is being driven.
+
+Overrides:
+
+- `JEV_CDP_PROFILE_DIR=/home/bot/chrome-profile-14` pins one profile; Jev errors if it has no live `DevToolsActivePort`.
+- `JEV_CDP_DISPLAY=:14` scopes discovery to a display other than the inherited `DISPLAY`.
+- `CDP_URL=ws://…` pins the endpoint. Use the full `ws://` URL from that profile's `DevToolsActivePort` (it changes on every Chrome restart), not `http://`, and make sure it is **your** agent's Chrome.
+- `JEV_CDP_DISCOVER=false` always launches Jev's own Chromium.
+
+Without `/proc` (macOS, Windows) there is one user session, so discovery checks all Chromes and the default profile directories, and also falls back to `--remote-debugging-port=<n>` / `http://127.0.0.1:9222` for Chrome launched with the legacy flag.
+
+Do not `curl /json/version` to check: the `chrome://inspect` flow exposes only the WebSocket endpoint and returns 404 there.
 
 When attached, `fast_web_abort` closes only the Jev tab and never quits Chrome. Finished runs leave the tab open for handoff (`open: true`); a `done` run in Jev's own Chromium closes it. Override with `keepOpen`.
 
-Set `JEV_CDP_DISCOVER=false` to always launch Jev's own Chromium.
+## Dialogs and time budget
+
+Controls hidden under a modal or cookie wall are never offered to Jev. Controls inside a dialog or a large fixed banner are tagged, and their Close / Dismiss / No thanks / I already donated buttons are marked as dismiss controls. If Jev chooses `TYPE_TEXT` on a field outside an open banner, the loop clicks the banner's dismiss control first and decides again, so the Bot is never asked for `need_text` on a field that is about to be covered. A covered or vanished target counts as a step and is recorded as failed, so the loop cannot spin.
+
+Every call returns within `JEV_MAX_RUN_MS` (default 45000, below the usual 60s MCP client timeout) with `status: "budget"` and the tab open. Continue with `reuseBrowser: true`. Per-call `maxMs` can lower it.
 
 ## 4. Attach the MCP server
 
@@ -61,6 +76,8 @@ If a form is involved:
 
 - `Missing AI_GATEWAY_API_KEY` — the MCP process cannot see the key.
 - Playwright/browser errors — run `npx playwright install chromium`.
-- `attached` is false but you enabled remote debugging — check that `DevToolsActivePort` exists in the Bot's Chrome profile and that the Bot clicked **Allow** on Chrome's permission dialog.
+- `attached` is false but you enabled remote debugging — check that `DevToolsActivePort` exists in the Bot's Chrome profile and that the Bot clicked **Allow** on Chrome's permission dialog. On Linux also confirm `DISPLAY` in the MCP server's environment matches the Chrome's (`cat /proc/<chrome pid>/environ | tr '\0' '\n' | grep DISPLAY`); if the server was started without `DISPLAY`, set `JEV_CDP_DISPLAY`.
+- `attached` is true but the page appears in another agent's Computer view — the result's `attachedTo` / `display` show which Chrome was chosen. Set `JEV_CDP_PROFILE_DIR` to your profile, or make sure `DISPLAY` is set for the server.
+- `status: "budget"` after ~45s — normal. Continue with `fast_web_task({ reuseBrowser: true, goal })`.
 - Evaluation errors — Jev is not available on `/chat/completions`. This MCP uses the AI SDK `evaluate` API.
 - Still slow — the Bot used pixel computer use instead of `fast_web_task`.

@@ -24,6 +24,8 @@ const elementSchema = z.object({
   checked: z.boolean().optional(),
   selected: z.boolean().optional(),
   expanded: z.boolean().optional(),
+  overlay: z.string().optional().describe("Id of the open dialog/banner containing this control."),
+  dismiss: z.boolean().optional().describe("This control closes its overlay."),
   options: z
     .array(
       z.object({
@@ -45,7 +47,7 @@ export function createServer(): McpServer {
     "fast_web_task",
     {
       description:
-        "Do a web task quickly. Attaches to the Bot's Chrome when it exposes DevTools (enable via chrome://inspect/#remote-debugging; Jev reads DevToolsActivePort), otherwise launches Chromium. Snapshot live DOM nodes, Jev picks the control, this tool clicks that node (bringToFront first). When a text field is needed, status is need_text — you write the string and call fast_web_fill. On blocked/budget, or whenever attached, the tab stays open (open: true) — use screenshot computer use on the returned url, same tab. Do not screenshot-click the happy path.",
+        "Do a web task quickly. Attaches to this agent's Chrome when it exposes DevTools (enable via chrome://inspect/#remote-debugging; Jev reads DevToolsActivePort, scoped to this DISPLAY), otherwise launches Chromium on this display. Snapshot live DOM nodes, Jev picks the control, this tool clicks that node. Open dialogs/banners are dismissed before typing; controls hidden under them are never offered. When a text field is needed, status is need_text — you write the string and call fast_web_fill. On blocked/budget, or whenever attached, the tab stays open (open: true) — use screenshot computer use on the returned url, same tab. Do not screenshot-click the happy path.",
       inputSchema: z.object({
         url: z
           .string()
@@ -53,6 +55,13 @@ export function createServer(): McpServer {
           .describe("Starting URL. Required unless reuseBrowser is true."),
         goal: z.string().describe("The full task. Stop condition belongs here."),
         maxSteps: z.number().int().min(1).max(40).optional(),
+        maxMs: z
+          .number()
+          .int()
+          .min(1000)
+          .max(45000)
+          .optional()
+          .describe("Wall-clock budget for this call in ms (default 45000). Returns status budget with the tab open when exceeded; continue with reuseBrowser."),
         fillMode: z
           .enum(["bot", "helper"])
           .optional()
@@ -67,9 +76,9 @@ export function createServer(): McpServer {
           .describe("Keep the already-open page instead of launching a new browser. Pass a url to navigate that same window. Do not use while status is need_text."),
       }),
     },
-    async ({ url, goal, maxSteps, fillMode, keepOpen, reuseBrowser }) => {
+    async ({ url, goal, maxSteps, maxMs, fillMode, keepOpen, reuseBrowser }) => {
       try {
-        const result = await startFastWebTask({ url, goal, maxSteps, fillMode, keepOpen, reuseBrowser });
+        const result = await startFastWebTask({ url, goal, maxSteps, maxMs, fillMode, keepOpen, reuseBrowser });
         return jsonResult(result);
       } catch (error) {
         return errorResult(error instanceof Error ? error.message : String(error));

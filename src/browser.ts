@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type CDPSession, type Page } from "playwright";
 import type { ObservedPage, SnapshotAction } from "./action-space.ts";
-import { discoverCdpUrl } from "./cdp.ts";
+import { discoverCdp } from "./cdp.ts";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SNAPSHOT = readFileSync(join(ROOT, "runtime/snapshot.js"), "utf8");
@@ -47,18 +47,25 @@ export class FastBrowser {
   private page: Page | undefined;
   private session: CDPSession | undefined;
   private connected = false;
+  private attachment: string | undefined;
 
   get attached(): boolean {
     return this.connected;
   }
 
+  /** Profile dir or endpoint of the Chrome this instance drives, when attached. */
+  get attachedTo(): string | undefined {
+    return this.attachment;
+  }
+
   async open(url: string): Promise<void> {
-    const cdp = await discoverCdpUrl();
+    const cdp = await discoverCdp();
     const headless = process.env.JEV_HEADLESS === "true";
 
     if (cdp) {
-      this.browser = await sharedBrowser(cdp);
+      this.browser = await sharedBrowser(cdp.url);
       this.connected = true;
+      this.attachment = cdp.profileDir ?? cdp.url;
       const context = this.browser.contexts()[0] ?? await this.browser.newContext({
         viewport: { width: 1120, height: 780 },
       });
@@ -146,6 +153,7 @@ export class FastBrowser {
     if (this.browser && !this.connected) await this.browser.close().catch(() => undefined);
     this.browser = undefined;
     this.connected = false;
+    this.attachment = undefined;
   }
 
   private requirePage(): Page {

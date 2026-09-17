@@ -53,14 +53,44 @@
       e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),
       e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
   };
-  const actions=[];
+  // Overlay = modal dialog, or a fixed/sticky ancestor covering >=20% of the viewport
+  // (cookie walls, donate banners). Controls inside are tagged so the policy can
+  // dismiss before typing elsewhere; controls hidden under one are dropped entirely.
+  const MODAL='dialog[open],[role="dialog"],[role="alertdialog"],[aria-modal="true"]';
+  const viewportArea=innerWidth*innerHeight, overlayCache=new Map();
+  const overlayOf = e => {
+    const path=[]; let found=null;
+    for (let a=e.parentElement; a && a!==document.body; a=a.parentElement) {
+      if (overlayCache.has(a)) { found=overlayCache.get(a); break; }
+      path.push(a);
+      if (a.matches(MODAL)) { found=a; break; }
+      const pos=getComputedStyle(a).position;
+      if (pos==='fixed' || pos==='sticky') {
+        const r=a.getBoundingClientRect();
+        if (r.width*r.height>=viewportArea*0.2) { found=a; break; }
+      }
+    }
+    for (const a of path) overlayCache.set(a,found);
+    return found;
+  };
+  const DISMISS=/^(close|dismiss|no,? thanks?|not now|maybe later|later|skip|got it|ok|okay|i already donated|already donated|continue without|reject( all)?|decline|accept( all)?|agree|[×✕✖x])\b/i;
+  const isDismiss = (e,label) => DISMISS.test(label.trim()) ||
+    /close|dismiss/i.test(e.getAttribute('aria-label')||'') || e.hasAttribute('data-dismiss') ||
+    /(^|[\s_-])(close|dismiss)([\s_-]|$)/i.test(typeof e.className==='string' ? e.className : '');
+  const actions=[]; let covered=0;
   for (const e of document.querySelectorAll(selector)) {
     if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
     const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
     if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
+    if (!e.contains(document.elementFromPoint(x,y))) { covered++; continue; }
     const base={node:identity(e),role:rname,label:name(e)||rname,
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
+    const overlay=overlayOf(e);
+    if (overlay) {
+      base.overlay=identity(overlay);
+      if (isDismiss(e,base.label)) base.dismiss=true;
+    }
     for (const key of ['checked','selected','expanded']) {
       const value=e.getAttribute('aria-'+key);
       if (value!==null) base[key]=value;
@@ -104,5 +134,5 @@
   if (scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560});
   actions.push({id:'wait',kind:'wait',label:'Wait for the page to update'});
   return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,
-    scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions};
+    scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions,covered_actions:covered};
 })()

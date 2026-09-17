@@ -11,6 +11,12 @@ Recent WAIT actions are not evidence of loading. Prefer a useful visible control
 DONE requires visible evidence that ALL requirements are satisfied. If asked to open a result,
 a matching link is not enough. BLOCKED means no supported operation can make progress.`;
 
+export const OVERLAY_OPEN = `A dialog, modal, or banner is open (see open_overlays; its controls have in_overlay set).
+Unless the goal is inside that overlay, CLICK one of its dismiss controls (dismisses_overlay: true,
+e.g. Close, No thanks, I already donated) before any other operation. Never TYPE_TEXT into a control
+outside an open overlay. A dismiss control that already failed or did not remove the overlay in
+recent_actions should not be chosen again; pick a different dismiss control or continue the goal.`;
+
 export const TARGET = `Choose the best observed target if the next operation is the one specified in this question.
 Use the user's entire goal, field values, nearby text, and recent actions. This question chooses only
 a target for that operation; another question decides which operation to execute. Do not choose
@@ -19,6 +25,9 @@ a field that already contains the requested value. Choose only an offered elemen
 export const MAX_CHOICE_OPTIONS = 255;
 
 export const MAX_STEPS = 40;
+
+/** Wall-clock budget per tool call. Returns "budget" before MCP clients time out (~60s). */
+export const MAX_RUN_MS = 45_000;
 
 export const TEXT_VALUE = `Return a JSON object with exactly one key, text: the exact string to enter in the selected field.
 Infer the value from the original goal and field meaning, using current page context and history.
