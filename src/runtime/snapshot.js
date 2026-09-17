@@ -77,13 +77,36 @@
   const isDismiss = (e,label) => DISMISS.test(label.trim()) ||
     /close|dismiss/i.test(e.getAttribute('aria-label')||'') || e.hasAttribute('data-dismiss') ||
     /(^|[\s_-])(close|dismiss)([\s_-]|$)/i.test(typeof e.className==='string' ? e.className : '');
+  // Hit-test each line box, not the union bounding box: for an inline link that
+  // wraps, the union's center usually lands on the paragraph between the lines.
+  // Probe the center, then 25%/75% along the box for odd shapes. Returns the first
+  // point that resolves to the element, or null if every on-screen box is covered.
+  const hitPoint = e => {
+    let onScreen=false;
+    for (const r of e.getClientRects()) {
+      if (r.width<=0 || r.height<=0) continue;
+      const cy=r.y+r.height/2;
+      if (cy<0 || cy>=innerHeight) continue;
+      for (const f of [0.5,0.25,0.75]) {
+        const x=r.x+r.width*f;
+        if (x<0 || x>=innerWidth) continue;
+        onScreen=true;
+        const top=document.elementFromPoint(x,cy);
+        if (top && e.contains(top)) return {x,y:cy,onScreen};
+      }
+    }
+    return onScreen ? {covered:true} : null;
+  };
   const actions=[]; let covered=0;
   for (const e of document.querySelectorAll(selector)) {
     if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
-    const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
-    if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+    const rname=role(e);
+    if (!rname) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
-    if (!e.contains(document.elementFromPoint(x,y))) { covered++; continue; }
+    const hit=hitPoint(e);
+    if (!hit) continue;
+    if (hit.covered) { covered++; continue; }
+    const r=e.getBoundingClientRect();
     const base={node:identity(e),role:rname,label:name(e)||rname,
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
     const overlay=overlayOf(e);

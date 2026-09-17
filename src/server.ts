@@ -39,8 +39,8 @@ const elementSchema = z.object({
 
 export function createServer(): McpServer {
   const server = new McpServer({
-    name: "jev",
-    version: "0.1.0",
+    name: "crack-bot",
+    version: "0.2.0",
   });
 
   server.registerTool(
@@ -69,7 +69,7 @@ export function createServer(): McpServer {
         keepOpen: z
           .boolean()
           .optional()
-          .describe("Leave the tab open after the run so screenshot computer use can continue on the same page. Default: true when attached to the Bot's Chrome or when status is blocked/budget; false for a done run in Jev's own Chromium. When attached, fast_web_abort closes only the Jev tab — never Chrome."),
+          .describe("Leave the tab open after the run so screenshot computer use can continue on the same page. Default: true when attached to the Bot's Chrome or when status is blocked/budget; false for a done run in crack-bot's own Chromium. When attached, fast_web_abort closes only the crack-bot tab — never Chrome."),
         reuseBrowser: z
           .boolean()
           .optional()
@@ -109,7 +109,7 @@ export function createServer(): McpServer {
     "fast_web_abort",
     {
       description:
-        "Detach from the current fast_web_task. When a result said open: true, the tab stays open until you call this. Drops any waiting TYPE_TEXT. If attached to the Bot's Chrome, this closes only the Jev tab and never quits Chrome.",
+        "Detach from the current fast_web_task. When a result said open: true, the tab stays open until you call this. Drops any waiting TYPE_TEXT. If attached to the Bot's Chrome, this closes only the crack-bot tab and never quits Chrome.",
       inputSchema: z.object({}),
     },
     async () => {

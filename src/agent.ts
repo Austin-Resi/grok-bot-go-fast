@@ -2,6 +2,7 @@ import { actionSpace, type ActionSpace, type ObservedPage, type SnapshotAction }
 import { FastBrowser, StalePage } from "./browser.ts";
 import { buildUiActionQuestions } from "./choose-ui-action.ts";
 import type { RecentAction } from "./choose-ui-action.ts";
+import { setting } from "./env.ts";
 import { evaluateWithGateway } from "./evaluate.ts";
 import { fieldText } from "./fill-text.ts";
 import { resolveUiDecision } from "./format.ts";
@@ -84,7 +85,7 @@ interface Run {
 let active: Run | undefined;
 
 function runBudgetMs(input: FastWebTaskInput): number {
-  const env = Number(process.env.JEV_MAX_RUN_MS);
+  const env = Number(setting("MAX_RUN_MS"));
   const fallback = Number.isFinite(env) && env > 0 ? env : MAX_RUN_MS;
   const requested = input.maxMs ?? fallback;
   return Math.min(Math.max(requested, 1_000), fallback);

@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "jev": {
+    "crack-bot": {
       "command": "npx",
       "args": ["--yes", "tsx", "./src/index.ts"],
       "env": {

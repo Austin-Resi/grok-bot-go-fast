@@ -1,9 +1,9 @@
 ---
-name: jev-computer-use
+name: crack-bot-computer-use
 description: Speeds up Grok Bot web computer use by delegating to fast_web_task. That tool snapshots live DOM nodes, asks TypeSafe Jev on Vercel AI Gateway what to click, and clicks the node. When a text field is needed, you write the string and call fast_web_fill. Use for forms, search, browsing, and any site with normal HTML controls. Do not screenshot-click those pages.
 ---
 
-# Jev computer use
+# crack-bot computer use
 
 For a website or web app, call **`fast_web_task`**. Do not screenshot, do not guess coordinates, do not build an element table yourself.
 
@@ -85,6 +85,6 @@ Needs `AI_GATEWAY_API_KEY`. Jev is evaluation, not chat completions. Create a ke
 ## Other tools
 
 - `fast_web_fill` — resume after `need_text`
-- `fast_web_abort` — close the Jev tab (never quits the Bot's Chrome when attached)
+- `fast_web_abort` — close the crack-bot tab (never quits the Bot's Chrome when attached)
 - `jev_decide` — non-UI judgments (choice / score / boolean) on arbitrary state
 - `jev_choose_ui_action` — debug only; does not click

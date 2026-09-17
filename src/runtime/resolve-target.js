@@ -9,11 +9,22 @@ function (action) {
     return null;
   }
   if (action.kind === "fill" && (e.readOnly || e.getAttribute("aria-readonly") === "true")) return null;
-  const r = e.getBoundingClientRect();
-  const x = r.x + r.width / 2;
-  const y = r.y + r.height / 2;
-  if (!r.width || !r.height || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return null;
-  if (!e.contains(document.elementFromPoint(x, y))) return null;
+  // Same per-line-box probe as snapshot.js: a wrapped inline link's union center
+  // is not on the link. Click the first point that actually resolves to it.
+  let point = null;
+  for (const r of e.getClientRects()) {
+    if (r.width <= 0 || r.height <= 0) continue;
+    const y = r.y + r.height / 2;
+    if (y < 0 || y >= innerHeight) continue;
+    for (const f of [0.5, 0.25, 0.75]) {
+      const x = r.x + r.width * f;
+      if (x < 0 || x >= innerWidth) continue;
+      const top = document.elementFromPoint(x, y);
+      if (top && e.contains(top)) { point = { x, y }; break; }
+    }
+    if (point) break;
+  }
+  if (!point) return null;
   if (action.kind === "select") {
     if (e.tagName !== "SELECT" || ![...e.options].some((o) => o.value === action.value && !o.disabled && !o.closest("optgroup[disabled]"))) {
       return null;
@@ -22,5 +33,5 @@ function (action) {
     e.dispatchEvent(new Event("input", { bubbles: true }));
     e.dispatchEvent(new Event("change", { bubbles: true }));
   }
-  return { x, y };
+  return point;
 }

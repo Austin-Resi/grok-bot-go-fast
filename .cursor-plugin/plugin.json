@@ -1,13 +1,13 @@
 {
-  "name": "jev",
-  "version": "0.1.0",
-  "description": "TypeSafe Jev through Vercel AI Gateway. Fast structured decisions and screenshot-free UI action selection.",
+  "name": "crack-bot",
+  "version": "0.2.0",
+  "description": "crack-bot: fast live-DOM computer use. Decides with TypeSafe Jev through Vercel AI Gateway and clicks the observed node; no screenshot loop.",
   "author": {
     "name": "Austin Lucas"
   },
-  "homepage": "https://vercel.com/ai-gateway/models/jev",
+  "homepage": "https://github.com/Austin-Resi/grok-bot-go-fast",
   "license": "MIT",
-  "keywords": ["jev", "typesafe", "ai-gateway", "computer-use"],
+  "keywords": ["crack-bot", "jev", "typesafe", "ai-gateway", "computer-use"],
   "skills": "./skills/",
   "mcpServers": "./mcp.json"
 }

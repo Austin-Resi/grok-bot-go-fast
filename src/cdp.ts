@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { setting, settingIs } from "./env.ts";
 
 export interface DevToolsActivePort {
   port: number;
@@ -205,7 +206,7 @@ async function discoverFromHttp(ports: number[]): Promise<string | undefined> {
 /**
  * Find the Chrome this agent should drive.
  *
- * Order: CDP_URL → JEV_CDP_PROFILE_DIR → Chromes on this DISPLAY (Linux, via
+ * Order: CDP_URL → CRACK_BOT_CDP_PROFILE_DIR → Chromes on this DISPLAY (Linux, via
  * /proc/<pid>/environ) → all Chromes when no DISPLAY scoping is possible.
  * When DISPLAY is set and no Chrome on it exposes DevTools, returns undefined
  * so the caller launches its own browser on this display rather than driving
@@ -223,20 +224,20 @@ export async function discoverCdp(): Promise<CdpAttachment | undefined> {
     return { url: explicit };
   }
 
-  if (process.env.JEV_CDP_DISCOVER === "false") return undefined;
+  if (settingIs("CDP_DISCOVER", "false")) return undefined;
 
-  const pinned = process.env.JEV_CDP_PROFILE_DIR?.trim();
+  const pinned = setting("CDP_PROFILE_DIR");
   if (pinned) {
     const found = await discoverFromProfiles([pinned]);
     if (!found) {
       throw new Error(
-        `JEV_CDP_PROFILE_DIR ${pinned} has no live DevToolsActivePort. Enable chrome://inspect/#remote-debugging in that Chrome, or unset the variable.`,
+        `CRACK_BOT_CDP_PROFILE_DIR ${pinned} has no live DevToolsActivePort. Enable chrome://inspect/#remote-debugging in that Chrome, or unset the variable.`,
       );
     }
     return found;
   }
 
-  const display = process.env.JEV_CDP_DISPLAY?.trim() || process.env.DISPLAY?.trim() || undefined;
+  const display = setting("CDP_DISPLAY") || process.env.DISPLAY?.trim() || undefined;
   const all = parseChromeProcesses(processTable());
   const canScope = display != null && existsSync("/proc");
   const scoped = canScope ? scopeToDisplay(all, display) : all;

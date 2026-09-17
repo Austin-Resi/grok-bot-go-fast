@@ -4,8 +4,8 @@ import { FastBrowser } from "./browser.ts";
 
 describe("FastBrowser", () => {
   it("snapshots a live button and clicks that node", { timeout: 30_000 }, async () => {
-    process.env.JEV_HEADLESS = "true";
-    process.env.JEV_CDP_DISCOVER = "false";
+    process.env.CRACK_BOT_HEADLESS = "true";
+    process.env.CRACK_BOT_CDP_DISCOVER = "false";
     delete process.env.CDP_URL;
     const browser = new FastBrowser();
     try {
@@ -17,6 +17,41 @@ describe("FastBrowser", () => {
       await browser.goto("data:text/html,<!doctype html><button id='next'>Next</button>");
       const nextPage = await browser.observe();
       assert.ok(nextPage.actions.some((action) => action.label === "Next"));
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("keeps a wrapped inline link whose union-box center misses the anchor, and clicks it", { timeout: 30_000 }, async () => {
+    process.env.CRACK_BOT_HEADLESS = "true";
+    process.env.CRACK_BOT_CDP_DISCOVER = "false";
+    delete process.env.CDP_URL;
+    // Line 1: 320px of filler then "United"; line 2: "States" then 320px of filler.
+    // The anchor's union rect spans x≈0..370 and both lines, so its center sits on
+    // the line-2 filler span, not on either link fragment.
+    const html = `<!doctype html>
+      <p style="width:400px;font:16px/24px sans-serif;margin:40px;white-space:nowrap">
+        <span style="display:inline-block;width:320px">Wisconsin is a state of the</span>
+        <a id="us" href="javascript:void(0)" onclick="window.__hit=true">United<br>States</a>
+        <span style="display:inline-block;width:320px">bordered by Minnesota.</span>
+      </p>`;
+    const browser = new FastBrowser();
+    try {
+      await browser.open(`data:text/html,${encodeURIComponent(html)}`);
+      const page = await browser.observe();
+      const rects = await browser.evaluate<number>("document.getElementById('us').getClientRects().length");
+      assert.ok(rects >= 2, `expected the link to wrap, got ${rects} line box(es)`);
+      const unionCenterHitsAnchor = await browser.evaluate<boolean>(
+        "(() => { const e = document.getElementById('us'); const r = e.getBoundingClientRect(); return e.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })()",
+      );
+      assert.equal(unionCenterHitsAnchor, false, "test setup: union center must miss the anchor to exercise the fix");
+
+      const link = page.actions.find((a) => a.kind === "click" && /^United\s+States/.test(a.label));
+      assert.ok(link, `wrapped link is offered as an action; got ${JSON.stringify(page.actions.map((a) => a.label))}`);
+      assert.equal(page.covered_actions, 0);
+
+      await browser.act(link);
+      assert.equal(await browser.evaluate<boolean>("window.__hit === true"), true, "click landed on the anchor");
     } finally {
       await browser.close();
     }

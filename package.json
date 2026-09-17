@@ -1,10 +1,10 @@
 {
-  "name": "jev-grok-bot",
-  "version": "0.1.0",
-  "description": "Grok Bot plugin: Jev via Vercel AI Gateway plus a live-DOM click executor.",
+  "name": "crack-bot",
+  "version": "0.2.0",
+  "description": "crack-bot: Grok Bot plugin that runs the fast live-DOM computer-use loop, deciding with TypeSafe Jev via Vercel AI Gateway.",
   "type": "module",
   "bin": {
-    "jev-mcp": "./src/index.ts"
+    "crack-bot-mcp": "./src/index.ts"
   },
   "scripts": {
     "mcp": "tsx src/index.ts",
@@ -17,6 +17,7 @@
   },
   "license": "MIT",
   "keywords": [
+    "crack-bot",
     "grok-bot",
     "jev",
     "typesafe",

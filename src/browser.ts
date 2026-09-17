@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type CDPSession, type Page } from "playwright";
 import type { ObservedPage, SnapshotAction } from "./action-space.ts";
 import { discoverCdp } from "./cdp.ts";
+import { settingIs } from "./env.ts";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SNAPSHOT = readFileSync(join(ROOT, "runtime/snapshot.js"), "utf8");
@@ -60,7 +61,7 @@ export class FastBrowser {
 
   async open(url: string): Promise<void> {
     const cdp = await discoverCdp();
-    const headless = process.env.JEV_HEADLESS === "true";
+    const headless = settingIs("HEADLESS", "true");
 
     if (cdp) {
       this.browser = await sharedBrowser(cdp.url);
@@ -88,6 +89,15 @@ export class FastBrowser {
 
   async focus(): Promise<void> {
     await this.page?.bringToFront().catch(() => undefined);
+  }
+
+  /** Evaluate an expression in the page. Diagnostics and tests only. */
+  async evaluate<T>(expression: string): Promise<T> {
+    const session = this.session;
+    if (!session) throw new Error("Browser is not open");
+    const result = await session.send("Runtime.evaluate", { expression, returnByValue: true });
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.text ?? "Evaluation failed");
+    return result.result?.value as T;
   }
 
   async observe(): Promise<ObservedPage> {

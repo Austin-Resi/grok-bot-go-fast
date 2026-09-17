@@ -1,5 +1,6 @@
 import { experimental_evaluate as evaluate } from "ai";
 import type { Experimental_EvaluationQuestion } from "ai";
+import { setting, settingIs } from "./env.ts";
 
 const DEFAULT_MODEL = "typesafe-ai/jev";
 
@@ -22,7 +23,7 @@ export interface EvaluateOutput {
 }
 
 function gatewayModel(): string {
-  return process.env.JEV_MODEL?.trim() || DEFAULT_MODEL;
+  return setting("MODEL") || DEFAULT_MODEL;
 }
 
 function requireGatewayAuth(): string | undefined {
@@ -91,7 +92,7 @@ export async function evaluateWithGateway(input: EvaluateInput): Promise<Evaluat
   const authError = requireGatewayAuth();
   if (authError) throw new Error(authError);
 
-  const zeroDataRetention = process.env.JEV_ZERO_DATA_RETENTION === "true";
+  const zeroDataRetention = settingIs("ZERO_DATA_RETENTION", "true");
   const model = gatewayModel();
   const questions = toQuestions(input.questions);
 

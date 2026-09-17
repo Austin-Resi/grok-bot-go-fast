@@ -1,23 +1,23 @@
 {
-  "name": "jev",
-  "version": "0.1.0",
-  "description": "TypeSafe Jev through Vercel AI Gateway. Fast structured decisions and screenshot-free UI action selection for Grok Bot.",
+  "name": "crack-bot",
+  "version": "0.2.0",
+  "description": "crack-bot: fast live-DOM computer use for Grok Bot. Decides with TypeSafe Jev through Vercel AI Gateway and clicks the observed node; no screenshot loop.",
   "author": {
     "name": "Austin Lucas"
   },
-  "homepage": "https://vercel.com/ai-gateway/models/jev",
+  "homepage": "https://github.com/Austin-Resi/grok-bot-go-fast",
   "license": "MIT",
-  "keywords": ["jev", "typesafe", "ai-gateway", "computer-use"],
+  "keywords": ["crack-bot", "jev", "typesafe", "ai-gateway", "computer-use"],
   "skills": "./skills/",
   "mcpServers": "./mcp.json",
   "interface": {
-    "displayName": "Jev (AI Gateway)",
-    "shortDescription": "Use TypeSafe Jev via Vercel AI Gateway instead of slow screenshot computer use.",
-    "longDescription": "Runs the jev-ultrafast loop on the Bot computer: snapshot live DOM nodes, ask TypeSafe Jev on Vercel AI Gateway (typesafe-ai/jev), click that node. Call fast_web_task instead of screenshot computer use. On TYPE_TEXT, write the string and call fast_web_fill. Requires AI_GATEWAY_API_KEY and Playwright Chromium.",
+    "displayName": "crack-bot",
+    "shortDescription": "Fast live-DOM web tasks instead of slow screenshot computer use.",
+    "longDescription": "crack-bot runs the jev-ultrafast loop on the Bot computer: snapshot live DOM nodes, ask TypeSafe Jev on Vercel AI Gateway (typesafe-ai/jev) what to do, click that node. Call fast_web_task instead of screenshot computer use. On TYPE_TEXT, write the string and call fast_web_fill. Attaches to this agent's Chrome when remote debugging is enabled. Requires AI_GATEWAY_API_KEY.",
     "developerName": "Austin Lucas",
     "category": "Productivity",
     "capabilities": ["Read"],
-    "websiteURL": "https://vercel.com/ai-gateway/models/jev",
+    "websiteURL": "https://github.com/Austin-Resi/grok-bot-go-fast",
     "defaultPrompt": [
       "Use fast_web_task for web work. Do not screenshot-click.",
       "If status is need_text, write the field value from the goal and call fast_web_fill.",

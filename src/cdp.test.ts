@@ -26,7 +26,7 @@ const MULTI_AGENT_PS = [
   "  520 /opt/google/chrome/chrome --user-data-dir=/home/bot/chrome-profile-10 --remote-debugging-port=0",
   "  777 /opt/google/chrome/chrome --user-data-dir=/home/bot/chrome-profile-14 --remote-debugging-port=0",
   "  778 /opt/google/chrome/chrome --type=gpu-process --user-data-dir=/home/bot/chrome-profile-14",
-  "  900 node /home/bot/jev/node_modules/.bin/tsx src/index.ts",
+  "  900 node /home/bot/crack-bot/node_modules/.bin/tsx src/index.ts",
   "  901 grep chrome",
 ].join("\n");
 
@@ -88,7 +88,7 @@ test("defaultProfileDirs covers linux, mac, and windows", () => {
 });
 
 test("readDevToolsActivePort parses the chrome://inspect ws-only endpoint", () => {
-  const dir = mkdtempSync(join(tmpdir(), "jev-profile-"));
+  const dir = mkdtempSync(join(tmpdir(), "crack-bot-profile-"));
   try {
     writeFileSync(join(dir, "DevToolsActivePort"), "9222\n/devtools/browser/0f1e2d3c\n");
     const active = readDevToolsActivePort(dir);

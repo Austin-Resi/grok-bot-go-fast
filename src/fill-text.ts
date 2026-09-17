@@ -1,5 +1,6 @@
 import { generateObject } from "ai";
 import * as z from "zod/v4";
+import { setting } from "./env.ts";
 import { TEXT_VALUE } from "./questions.ts";
 
 const DEFAULT_TEXT_MODEL = "google/gemini-2.5-flash";
@@ -12,7 +13,7 @@ export interface FillContext {
 }
 
 export async function fieldText(context: FillContext): Promise<string> {
-  const model = process.env.JEV_TEXT_MODEL?.trim() || DEFAULT_TEXT_MODEL;
+  const model = setting("TEXT_MODEL") || DEFAULT_TEXT_MODEL;
   const { object } = await generateObject({
     model,
     schema: z.object({ text: z.string().nullable() }),
