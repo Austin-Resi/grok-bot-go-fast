@@ -1,8 +1,10 @@
+import { existsSync } from "node:fs";
+import { basename } from "node:path";
 import { actionSpace, type ActionSpace, type ObservedPage, type SnapshotAction } from "./action-space.ts";
 import { FastBrowser, StalePage } from "./browser.ts";
 import { buildUiActionQuestions } from "./choose-ui-action.ts";
 import type { Progress, RecentAction } from "./choose-ui-action.ts";
-import { setting } from "./env.ts";
+import { setting, settingIs } from "./env.ts";
 import { evaluateWithGateway } from "./evaluate.ts";
 import { matchField, type TaskData } from "./field-match.ts";
 import { fieldText } from "./fill-text.ts";
@@ -29,6 +31,12 @@ export interface FastWebTaskInput {
   goal: string;
   /** Values the Bot already knows (title, price, tags…). Typed into matching fields without a round trip. */
   data?: TaskData;
+  /**
+   * Files to attach, as paths on this computer. A flat list is one group named
+   * "files"; a map names several groups (photos, video, document…) so the right
+   * one goes to the right input.
+   */
+  files?: string[] | Record<string, string[]>;
   maxSteps?: number;
   maxMs?: number;
   fillMode?: FillMode;
@@ -90,6 +98,8 @@ export interface RunStats {
   routeHops: number;
   /** Fields filled from provided data without asking the Bot. */
   dataFills: number;
+  /** Files attached to file inputs. */
+  uploads: number;
 }
 
 export interface FastWebTaskResult {
@@ -160,6 +170,8 @@ interface Run {
   routeHops: number;
   data: TaskData;
   dataUsed: Set<string>;
+  files: Record<string, string[]>;
+  filesUsed: Set<string>;
 }
 
 let active: Run | undefined;
@@ -177,13 +189,45 @@ function runBudgetMs(input: FastWebTaskInput): number {
 }
 
 function freshStats(): RunStats {
-  return { gatewayMs: 0, asks: 0, lowConfidence: 0, failedTargets: 0, offscreenClicks: 0, routeHops: 0, dataFills: 0 };
+  return { gatewayMs: 0, asks: 0, lowConfidence: 0, failedTargets: 0, offscreenClicks: 0, routeHops: 0, dataFills: 0, uploads: 0 };
 }
 
-function resetProgress(run: Run, goal: string, maxSteps: number, maxMs: number, fillMode: FillMode, data: TaskData): void {
+/** Normalise the files input to named groups and check every path exists now, not mid-run. */
+function fileGroups(input: FastWebTaskInput["files"]): Record<string, string[]> {
+  if (!input) return {};
+  const groups: Record<string, string[]> = Array.isArray(input) ? { files: input } : { ...input };
+  for (const [name, paths] of Object.entries(groups)) {
+    if (!Array.isArray(paths) || !paths.length) throw new Error(`files.${name} must be a non-empty list of paths`);
+    for (const p of paths) {
+      if (!existsSync(p)) throw new Error(`files.${name}: "${p}" does not exist on this computer. Paths must be local to the crack-bot server.`);
+    }
+  }
+  return groups;
+}
+
+function resetProgress(
+  run: Run,
+  goal: string,
+  maxSteps: number,
+  maxMs: number,
+  fillMode: FillMode,
+  data: TaskData,
+  files: Record<string, string[]>,
+): void {
   run.goal = goal;
   run.data = data;
   run.dataUsed = new Set();
+  run.files = files;
+  run.filesUsed = new Set();
+  // Whenever the page opens a chooser (Jev clicked a styled Upload button), hand
+  // it the next unused file group; with one group that is simply "the files".
+  run.browser.fileChooserHandler = () => {
+    const remaining = Object.keys(run.files).filter((k) => !run.filesUsed.has(k));
+    const group = remaining[0] ?? Object.keys(run.files)[0];
+    if (!group) return [];
+    run.filesUsed.add(group);
+    return run.files[group];
+  };
   run.maxSteps = maxSteps;
   run.maxMs = maxMs;
   run.fillMode = fillMode;
@@ -212,6 +256,7 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
   const routeFloor = numberSetting("ROUTE_FLOOR", ROUTE_FLOOR, 0, 1);
   const routeHopLimit = numberSetting("ROUTE_HOPS", ROUTE_HOPS, 0, 40);
   const data = input.data ?? {};
+  const files = fileGroups(input.files);
 
   if (input.reuseBrowser) {
     const run = active;
@@ -229,7 +274,7 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
       run.routeFloor = routeFloor;
       run.routeHopLimit = routeHopLimit;
       run.page = await run.browser.observe({ goal: input.goal, topK });
-      resetProgress(run, input.goal, maxSteps, maxMs, fillMode, data);
+      resetProgress(run, input.goal, maxSteps, maxMs, fillMode, data, files);
       run.keepOpen = input.keepOpen ?? run.keepOpen;
       return await advanceActive();
     } catch (error) {
@@ -274,8 +319,10 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
       routeHops: 0,
       data,
       dataUsed: new Set(),
+      files,
+      filesUsed: new Set(),
     };
-    resetProgress(run, input.goal, maxSteps, maxMs, fillMode, data);
+    resetProgress(run, input.goal, maxSteps, maxMs, fillMode, data, files);
     active = run;
     return await advanceActive();
   } catch (error) {
@@ -378,10 +425,10 @@ interface Outcome {
   pageChanged: boolean;
 }
 
-/** Field values, checks and selections, so typing into a form counts as progress. */
+/** Field values, checks, selections and attached files, so filling a form counts as progress. */
 function formState(page: ObservedPage): string {
   return page.actions
-    .filter((a) => a.node != null && (a.kind === "fill" || a.kind === "select" || a.checked != null))
+    .filter((a) => a.node != null && (a.kind === "fill" || a.kind === "select" || a.kind === "upload" || a.checked != null))
     .map((a) => `${a.node}:${a.kind === "select" ? a.current_value ?? "" : a.value ?? ""}:${a.checked ?? ""}`)
     .join("|");
 }
@@ -417,7 +464,18 @@ async function perform(run: Run, action: SnapshotAction, text?: string, note?: s
     textChanged: run.page.text !== before.text,
     fieldsChanged: formState(run.page) !== formState(before),
   };
-  const progressed = madeProgress(action.kind, delta, ok);
+  // A click may have opened a file chooser; the browser answered it with the
+  // run's files (or nothing). Record that so Jev and the Bot can see it.
+  const chooser = run.browser.takeChooser();
+  if (chooser) {
+    if (chooser.attached > 0) {
+      run.stats.uploads += chooser.attached;
+      note = [note, `file chooser opened; attached ${chooser.attached} file(s)`].filter(Boolean).join("; ");
+    } else {
+      note = [note, "file chooser opened but no files were provided; nothing attached"].filter(Boolean).join("; ");
+    }
+  }
+  const progressed = madeProgress(action.kind, delta, ok) || (chooser?.attached ?? 0) > 0;
   if (delta.urlChanged && run.visited[run.visited.length - 1] !== run.page.url) run.visited.push(run.page.url);
   if (progressed) {
     run.streak = 0;
@@ -435,7 +493,14 @@ async function perform(run: Run, action: SnapshotAction, text?: string, note?: s
     failed,
     note,
   });
+  trace(run, `${action.kind} "${action.label.slice(0, 40)}"${text ? ` text=${JSON.stringify(text.slice(0, 30))}` : ""} -> ${ok ? "ok" : "failed"} ${progressed ? "progress" : "no-progress"} streak=${run.streak}${note ? ` | ${note}` : ""}`);
   return { ok, progressed, pageChanged: delta.urlChanged || delta.textChanged };
+}
+
+/** Per-step trace on stderr when CRACK_BOT_TRACE is set; the only way to see a hang live. */
+function trace(run: Run, message: string): void {
+  if (!settingIs("TRACE", "true") && !settingIs("TRACE", "1")) return;
+  console.error(`[crack-bot #${run.step} ${Math.round(performance.now() - run.started)}ms] ${message}`);
 }
 
 /**
@@ -469,6 +534,62 @@ async function resolveFill(run: Run): Promise<FastWebTaskResult | undefined> {
   });
   await applyFill(run, text, "from helper model");
   return undefined;
+}
+
+/**
+ * Which provided file group belongs on this input. One group: no question.
+ * Several: the same small comparison used for text values.
+ */
+async function pickFileGroup(run: Run, action: SnapshotAction): Promise<string | undefined> {
+  const remaining = Object.keys(run.files).filter((k) => !run.filesUsed.has(k));
+  const candidates = remaining.length ? remaining : Object.keys(run.files);
+  if (!candidates.length) return undefined;
+  if (candidates.length === 1) return candidates[0];
+  const preview: TaskData = {};
+  for (const name of candidates) preview[name] = run.files[name].map((p) => basename(p));
+  const match = await matchField({
+    goal: run.goal,
+    field: { label: `${action.label} (file input, accepts ${action.accept || "any"})`, role: "file", value: "" },
+    pageTitle: run.page.title,
+    data: preview,
+    used: run.filesUsed,
+  });
+  if (match) run.stats.gatewayMs += match.gatewayMs;
+  return match?.key ?? candidates[0];
+}
+
+async function performUpload(run: Run, action: SnapshotAction): Promise<{ outcome: Outcome; note: string }> {
+  const group = await pickFileGroup(run, action);
+  if (!group) {
+    run.streak += 1;
+    return { outcome: { ok: false, progressed: false, pageChanged: false }, note: "no files were provided for this input" };
+  }
+  const before = run.page;
+  let attached = 0;
+  let failed: string | undefined;
+  try {
+    attached = await run.browser.upload(action, run.files[group]);
+  } catch (error) {
+    if (!(error instanceof StalePage)) throw error;
+    failed = `file input was gone or disabled: ${error.message}`;
+    run.stats.failedTargets += 1;
+  }
+  if (attached > 0) {
+    run.filesUsed.add(group);
+    run.stats.uploads += attached;
+  }
+  run.page = await run.browser.observe({ goal: run.goal, topK: run.topK });
+  const pageChanged = run.page.url !== before.url || run.page.text !== before.text;
+  const progressed = attached > 0 || pageChanged;
+  if (progressed) {
+    run.streak = 0;
+    run.scrolledForBlocked = false;
+  } else {
+    run.streak += 1;
+  }
+  const note = failed ?? `attached ${attached} file(s) from files.${group}`;
+  run.history.push({ action: action.label, kind: "upload", pageChanged, failed, note });
+  return { outcome: { ok: !failed && attached > 0, progressed, pageChanged }, note };
 }
 
 async function applyFill(run: Run, text: string, source?: string): Promise<void> {
@@ -640,6 +761,7 @@ async function advanceActive(): Promise<FastWebTaskResult> {
         progress: progressState(run),
         canGoBack: run.browser.canGoBack,
         providedValues: Object.keys(run.data).filter((k) => !run.dataUsed.has(k)),
+        providedFiles: Object.keys(run.files).filter((k) => !run.filesUsed.has(k)),
       });
 
       // The gate tripped: stop guessing, hand the page to the planner with options.
@@ -663,6 +785,7 @@ async function advanceActive(): Promise<FastWebTaskResult> {
             : decision.operation;
       const lowConfidence = decision.confidence != null && decision.confidence < LOW_CONFIDENCE;
       if (lowConfidence) run.stats.lowConfidence += 1;
+      trace(run, `jev ${execute} conf=${decision.confidence ?? "-"} (${latencyMs}ms) on ${run.page.url}`);
 
       if (decision.operation === "DONE") {
         record(run, decision.operation, decision.target, execute, decision.confidence, latencyMs);
@@ -757,6 +880,13 @@ async function advanceActive(): Promise<FastWebTaskResult> {
         };
         const paused = await resolveFill(run);
         if (paused) return paused;
+        continue;
+      }
+
+      if (action.kind === "upload") {
+        const outcome = await performUpload(run, action);
+        record(run, "UPLOAD", decision.target, execute, decision.confidence, latencyMs, outcome.outcome, outcome.note);
+        run.step += 1;
         continue;
       }
 

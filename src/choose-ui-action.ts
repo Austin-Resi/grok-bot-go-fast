@@ -23,6 +23,8 @@ export interface UiElement {
   /** Inside the page's main content rather than navigation/header/footer chrome. */
   main?: boolean;
   href?: string;
+  /** A file input. */
+  upload?: { accept?: string; multiple: boolean; files_attached: number };
 }
 
 export interface Progress {
@@ -65,6 +67,8 @@ export interface ChooseUiActionInput {
   progress?: Progress;
   /** Names of values the Bot provided up front; TYPE_TEXT into a matching field needs no round trip. */
   providedValues?: string[];
+  /** Names of file groups the Bot provided; UPLOAD attaches them. */
+  providedFiles?: string[];
 }
 
 export interface ChoiceQuestion {
@@ -81,6 +85,7 @@ export interface UiActionQuestions {
     open_overlays: OpenOverlay[];
     progress?: Progress;
     provided_values?: string[];
+    provided_files?: string[];
   };
   questions: Record<string, ChoiceQuestion>;
   truncated: boolean;
@@ -90,6 +95,7 @@ const OPERATION_LABELS: Record<string, string> = {
   CLICK: "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
   TYPE_TEXT: "Enter or replace text in an editable field. Supply the value from the goal after this decision.",
   SELECT: "Select an observed dropdown value.",
+  UPLOAD: "Attach the provided files to a file input (photos, videos, documents). No dialog is opened.",
 };
 
 const CONTROL_OPERATIONS = new Set(["SCROLL_UP", "SCROLL_DOWN", "WAIT", "BACK", "DONE", "BLOCKED"]);
@@ -142,6 +148,7 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
           offscreen: element.offscreen,
           main_content: element.main,
           href: element.href,
+          file_input: element.upload,
         };
       }
     }
@@ -160,7 +167,7 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
   const rules = [NEXT_ACTION];
   if (hasDismissibleOverlay) rules.push(OVERLAY_OPEN);
   if (stuck) rules.push(NO_PROGRESS);
-  if (input.providedValues?.length) rules.push(PROVIDED_VALUES);
+  if (input.providedValues?.length || input.providedFiles?.length) rules.push(PROVIDED_VALUES);
 
   const questions: Record<string, ChoiceQuestion> = {
     operation: {
@@ -192,6 +199,7 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
       open_overlays: overlays,
       progress: input.progress,
       provided_values: input.providedValues?.length ? input.providedValues : undefined,
+      provided_files: input.providedFiles?.length ? input.providedFiles : undefined,
     },
     questions,
     truncated,

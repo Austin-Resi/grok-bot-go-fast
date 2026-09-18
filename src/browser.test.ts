@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { FastBrowser, StalePage } from "./browser.ts";
 
@@ -167,6 +170,49 @@ describe("FastBrowser", () => {
       for (const res of pending) res.end(first);
       await browser.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("attaches files to a hidden file input and answers a native chooser", { timeout: 30_000 }, async () => {
+    process.env.CRACK_BOT_HEADLESS = "true";
+    process.env.CRACK_BOT_CDP_DISCOVER = "false";
+    delete process.env.CDP_URL;
+    const dir = mkdtempSync(join(tmpdir(), "crack-bot-upload-"));
+    const photo = join(dir, "mug.png");
+    writeFileSync(photo, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64"));
+    const html = `<!doctype html>
+      <section><h2>Photo and video</h2>
+        <button type="button" onclick="document.getElementById('in').click()">+ Upload</button>
+        <input id="in" type="file" accept="image/*" multiple style="display:none"
+          onchange="document.getElementById('n').textContent=this.files.length+' attached'">
+        <p id="n">0 attached</p>
+      </section>`;
+    const browser = new FastBrowser();
+    try {
+      await browser.open(`data:text/html,${encodeURIComponent(html)}`);
+      const page = await browser.observe();
+      const input = page.actions.find((a) => a.kind === "upload");
+      assert.ok(input, "hidden file input is indexed");
+      assert.equal(input.label, "+ Upload", "labelled from the nearby styled button");
+      assert.equal(input.accept, "image/*");
+      assert.equal(input.multiple, true);
+
+      // Direct path: set files on the node, no dialog.
+      assert.equal(await browser.upload(input, [photo]), 1);
+      assert.match((await browser.observe()).text, /1 attached/);
+      const after = (await browser.observe()).actions.find((a) => a.kind === "upload");
+      assert.equal(after?.value, "1", "snapshot reports the attached count");
+
+      // Human path: the styled button opens a chooser; the handler answers it.
+      browser.fileChooserHandler = () => [photo, photo];
+      const button = page.actions.find((a) => a.label === "+ Upload" && a.kind === "click");
+      await browser.act(button!);
+      await browser.observe();
+      assert.deepEqual(browser.takeChooser(), { multiple: true, attached: 2 });
+      assert.match((await browser.observe()).text, /2 attached/);
+    } finally {
+      await browser.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

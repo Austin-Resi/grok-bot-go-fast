@@ -1,6 +1,6 @@
 ---
 name: crack-bot-computer-use
-description: Your fast hands for the web. Use fast_web_task for any task whose steps are clicking, typing, or selecting normal HTML controls (links, buttons, fields, dropdowns, checkboxes) on a website or web app: forms and listings, search, navigating to a page, changing settings, multi-page flows, checkout up to the final confirm. Give it the whole goal and everything you already know, then answer its short questions. It decides each step in ~0.5s with TypeSafe Jev and acts on the real DOM node. Do not use it for pixel work (canvas editors, maps, games, video, drag-and-drop, image cropping), CAPTCHAs, passkeys or 2FA, file uploads, or content inside embedded iframes (payment widgets); use screenshot computer use there. Prefer a connector when one exists for the service.
+description: Your fast hands for the web. Use fast_web_task for any task whose steps are clicking, typing, selecting, or uploading via normal HTML controls (links, buttons, fields, dropdowns, checkboxes, file inputs) on a website or web app: forms and listings with photos, search, navigating to a page, changing settings, multi-page flows, checkout up to the final confirm. Give it the whole goal, your values in data, and file paths in files, then answer its short questions. It decides each step in ~0.5s with TypeSafe Jev and acts on the real DOM node. Do not use it for pixel work (canvas editors, maps, games, video, drag-and-drop, image cropping), CAPTCHAs, passkeys or 2FA, or content inside embedded iframes (payment widgets); use screenshot computer use there. Prefer a connector when one exists for the service.
 ---
 
 # crack-bot: you think, it acts
@@ -17,7 +17,8 @@ Ask one question: **is the next thing I need to do a click, a keystroke, or a se
 | Search a site and open a result | Maps, charts, anything you position by eye | |
 | Navigate to a page, follow links, find a setting | Drag-and-drop, sliders you drag, video scrubbing | |
 | Checkout, sign-up, settings flows, up to the irreversible click (it asks before Publish / Pay / Delete) | CAPTCHA, passkey, 2FA, "are you human" (take over, then resume crack-bot with `reuseBrowser`) | |
-| Toggle checkboxes, pick dropdown values, tabs, accordions | File upload dialogs (not supported yet) | |
+| Toggle checkboxes, pick dropdown values, tabs, accordions | Drop-only zones with no file input behind them (rare) | |
+| Attach photos, videos, documents to a form (pass `files`) | | |
 | Dismissing cookie walls and modals (it does this itself) | Content inside a cross-origin iframe: embedded payment widgets, chat widgets, some ad-heavy pages | |
 | Read a page's visible text after navigating (`text` in the result) | Native OS dialogs, print dialogs, browser chrome | |
 
@@ -57,11 +58,17 @@ fast_web_task({
     quantity: 3,
     tags: ["ceramic", "mug", "handmade", "stoneware"],
     category: "Home & Living"
+  },
+  files: {
+    photos: ["/workspace/listing/mug-front.jpg", "/workspace/listing/mug-side.jpg"],
+    video: ["/workspace/listing/mug-spin.mp4"]
   }
 })
 ```
 
 For every text field Jev picks, crack-bot asks Jev which provided value belongs there (one cheap comparison, ~0.4s) and types it. You are asked (`need_text`) only for a field nothing in `data` fits. Measured: a 7-field listing form, 5 text fields plus a dropdown and Save, in 5.7s with zero questions to you. The same form field-by-field would be 7 turns. Key names are free-form; use the field's natural name. Values are never invented: a field with no matching data is left for you.
+
+`files` are absolute paths on this computer (put them under `/workspace`). They go straight onto the page's file input, no dialog: either Jev picks the hidden input directly (`UPLOAD`), or it clicks the site's styled "Upload" button and crack-bot answers the file chooser that opens. A flat list is one group; a map names groups so photos and a video land in the right slots (matched by the input's accepted types). Measured: 2 photos + 1 video + title + price + save on an Etsy-shaped form in 5.0s, zero asks. Paths are checked before the run starts; a missing file is an immediate error, not a mid-run surprise.
 
 **4. When asked, compare, don't deliberate.** crack-bot's questions come with the options already laid out. Read them, pick, answer. Never respond by screenshotting or by restarting `fast_web_task`; the run is paused and waiting for your one answer.
 
@@ -95,7 +102,7 @@ fast_web_task({ reuseBrowser: true, goal })
 
 ## When it finishes
 
-`done` means Jev saw visible evidence the goal was met (a confirmation, the target page). Verify against the result's `url`, `title`, and `text` if the outcome matters. `blocked` means it gave up after several steps that changed nothing; the tab is open at `url`, so continue there with screenshot computer use rather than starting over. `steps[]` shows every action with a note (`from data.price`, `route: "United States" is closer to the goal`, `dismissed overlay…`), and `stats` counts data fills, route hops, and asks.
+`done` means Jev saw visible evidence the goal was met (a confirmation, the target page). Verify against the result's `url`, `title`, and `text` if the outcome matters. `blocked` means it gave up after several steps that changed nothing; the tab is open at `url`, so continue there with screenshot computer use rather than starting over. `steps[]` shows every action with a note (`from data.price`, `attached 2 file(s) from files.photos`, `route: "United States" is closer to the goal`, `dismissed overlay…`), and `stats` counts data fills, uploads, route hops, and asks. Set `CRACK_BOT_TRACE=1` on the server to see each step on stderr as it happens.
 
 ## Sessions
 
@@ -110,7 +117,8 @@ Cookie walls, donate banners and modals are dismissed before typing; controls hi
 - Screenshot → VLM → `click(x, y)` on a page with HTML controls
 - Call `fast_web_task` once per click
 - Restart `fast_web_task` while `need_text` or `need_decision` is waiting; answer it
-- Withhold values you already have; put them in `data`
+- Withhold values you already have; put them in `data`, and file paths in `files`
+- Try to drive a file chooser dialog yourself; pass `files` and let crack-bot attach them
 - Call `jev_choose_ui_action` and click the index yourself
 
 ## Fall back to screenshot computer use only if

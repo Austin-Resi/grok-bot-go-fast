@@ -94,6 +94,28 @@ describe("actionSpace", () => {
     assert.equal(space.input.progress?.no_progress_steps, 1);
   });
 
+  it("offers file inputs as UPLOAD only when the Bot provided files", () => {
+    const page = {
+      url: "https://shop.example/listing/new",
+      title: "New listing",
+      text: "Photo and video",
+      actions: [
+        { id: "e1", kind: "upload" as const, node: 3, role: "button", label: "+ Upload", value: "0", accept: "image/*", multiple: true, main: true },
+        { id: "e2", kind: "click" as const, node: 4, role: "button", label: "Save draft", value: "" },
+      ],
+    };
+    const without = actionSpace(page, "create listing", []);
+    assert.deepEqual(without.input.elements.map((e) => e.label), ["Save draft"]);
+
+    const withFiles = actionSpace(page, "create listing", [], { providedFiles: ["photos"] });
+    const upload = withFiles.input.elements[0];
+    assert.equal(upload.label, "+ Upload");
+    assert.deepEqual(upload.operations, ["UPLOAD"]);
+    assert.deepEqual(upload.upload, { accept: "image/*", multiple: true, files_attached: 0 });
+    assert.equal(withFiles.resolve("UPLOAD", "1")?.kind, "upload");
+    assert.deepEqual(withFiles.input.providedFiles, ["photos"]);
+  });
+
   it("does not offer BACK without navigation history", () => {
     const space = actionSpace(
       { url: "https://example.com", title: "x", text: "", actions: [{ id: "wait", kind: "wait", label: "Wait" }] },

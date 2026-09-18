@@ -174,6 +174,25 @@ function (opts) {
       if (editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
     }
   }
+  // File inputs are usually hidden behind a styled "Upload" button, so they are
+  // indexed regardless of visibility. Execution sets files on the node directly.
+  const UPLOADISH=/upload|photo|image|picture|video|file|attach|browse|choose|add/i;
+  const uploadLabel = e => {
+    const own=name(e); if (own) return own;
+    for (let a=e.parentElement, depth=0; a && depth<5; a=a.parentElement, depth++) {
+      for (const sel of ['button,[role="button"],label','h1,h2,h3,h4,legend']) {
+        const hit=[...a.querySelectorAll(sel)].map(n=>name(n)).find(t=>t && UPLOADISH.test(t));
+        if (hit) return hit.replace(/\s+/g,' ').slice(0,80);
+      }
+    }
+    return 'Upload files';
+  };
+  for (const e of document.querySelectorAll('input[type="file"]')) {
+    if (e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
+    actions.push({node:identity(e),kind:'upload',role:'button',label:uploadLabel(e),
+      value:String(e.files?.length||0),accept:e.getAttribute('accept')||'',multiple:e.multiple,
+      main:!!e.closest(MAIN) && !e.closest(CHROME)});
+  }
   const words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
   const range=document.createRange(); let node,length=0;
   while ((node=walker.nextNode()) && length<6000) {

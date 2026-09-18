@@ -90,8 +90,29 @@ export class FastBrowser {
       this.page = await context.newPage();
     }
 
+    // Clicking a styled "Upload" button opens a native file chooser, which no
+    // model can drive. Intercept it: attach whatever the run provides, or let it
+    // pass with nothing so the page simply sees no selection.
+    this.page.on("filechooser", (chooser) => {
+      const paths = this.fileChooserHandler?.(chooser.isMultiple()) ?? [];
+      void (paths.length ? chooser.setFiles(chooser.isMultiple() ? paths : paths.slice(0, 1)) : Promise.resolve()).catch(() => undefined);
+      this.lastChooser = { multiple: chooser.isMultiple(), attached: paths.length };
+    });
+
     this.session = await this.page.context().newCDPSession(this.page);
     await this.goto(url);
+  }
+
+  /** Supplies file paths when the page opens a chooser; return [] to attach nothing. */
+  fileChooserHandler: ((multiple: boolean) => string[]) | undefined;
+  /** The last intercepted chooser, cleared by takeChooser(). */
+  private lastChooser: { multiple: boolean; attached: number } | undefined;
+
+  /** Whether a file chooser opened since the last call, and what was attached. */
+  takeChooser(): { multiple: boolean; attached: number } | undefined {
+    const c = this.lastChooser;
+    this.lastChooser = undefined;
+    return c;
   }
 
   async goto(url: string): Promise<void> {
@@ -169,6 +190,32 @@ export class FastBrowser {
     }
   }
 
+  /**
+   * Attach files to a file input by node, no OS dialog. Works on hidden inputs
+   * (the usual case behind a styled Upload button). Paths must exist on the
+   * machine running this server, which is the Bot's computer.
+   */
+  async upload(action: SnapshotAction, paths: string[]): Promise<number> {
+    const page = this.requirePage();
+    if (action.node == null) throw new StalePage("Action has no observed node");
+    await this.focus();
+    const handle = await page.evaluateHandle(
+      (id: number) => (window as unknown as { __jevFast?: { nodes: Map<number, Element> } }).__jevFast?.nodes.get(id) ?? null,
+      action.node,
+    );
+    const element = handle.asElement();
+    if (!element) throw new StalePage("File input is gone");
+    const isFile = await element.evaluate((e) => e instanceof HTMLInputElement && e.type === "file" && e.isConnected && !e.disabled);
+    if (!isFile) throw new StalePage("Target is no longer a file input");
+    const files = action.multiple ? paths : paths.slice(0, 1);
+    await element.setInputFiles(files);
+    const attached = await element.evaluate((e) => (e as HTMLInputElement).files?.length ?? 0);
+    await handle.dispose();
+    // Uploaders react asynchronously (thumbnails, progress). Give them a moment.
+    await page.waitForTimeout(800);
+    return attached;
+  }
+
   async act(action: SnapshotAction, text?: string): Promise<void> {
     const page = this.requirePage();
     await this.focus();
@@ -176,6 +223,7 @@ export class FastBrowser {
       await page.waitForTimeout(100);
       return;
     }
+    if (action.kind === "upload") throw new Error("Use upload() for file inputs");
     if (action.kind === "scroll") {
       await page.mouse.wheel(0, action.delta ?? 560);
       await page.waitForTimeout(50);

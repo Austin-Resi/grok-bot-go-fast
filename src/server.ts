@@ -19,7 +19,7 @@ const elementSchema = z.object({
   label: z.string(),
   operations: z
     .array(z.string())
-    .describe("Compatible operations for this control: CLICK, TYPE_TEXT, SELECT, WAIT, SCROLL_UP, SCROLL_DOWN"),
+    .describe("Compatible operations for this control: CLICK, TYPE_TEXT, SELECT, UPLOAD, WAIT, SCROLL_UP, SCROLL_DOWN"),
   value: z.string().optional(),
   checked: z.boolean().optional(),
   selected: z.boolean().optional(),
@@ -50,7 +50,7 @@ export function createServer(): McpServer {
     "fast_web_task",
     {
       description:
-        "Do a web task quickly on any page with normal HTML controls (forms, search, navigation, settings, checkout up to the confirm). Not for canvas/maps/drag-and-drop, CAPTCHAs, passkeys, file uploads, or content inside embedded iframes: use screenshot computer use for those. Attaches to this agent's Chrome when it exposes DevTools (enable via chrome://inspect/#remote-debugging; Jev reads DevToolsActivePort, scoped to this DISPLAY), otherwise launches Chromium on this display. Snapshot live DOM nodes, Jev picks the control, this tool clicks that node. Jev is System 1: it acts on its own when confident. When it cannot pick (BLOCKED, torn between options, or about to click something irreversible) the tool returns status need_decision with the candidate options and you choose with fast_web_choose — you are System 2. Offscreen links ranked against the goal are offered and scrolled to on click. Open dialogs/banners are dismissed before typing; controls hidden under them are never offered. When a text field is needed, status is need_text — you write the string and call fast_web_fill. On blocked/budget, or whenever attached, the tab stays open (open: true) — use screenshot computer use on the returned url, same tab. Do not screenshot-click the happy path.",
+        "Do a web task quickly on any page with normal HTML controls (forms, search, navigation, settings, checkout up to the confirm). Attaches files you pass in `files` (no dialog). Not for canvas/maps/drag-and-drop, CAPTCHAs, passkeys, or content inside embedded iframes: use screenshot computer use for those. Attaches to this agent's Chrome when it exposes DevTools (enable via chrome://inspect/#remote-debugging; Jev reads DevToolsActivePort, scoped to this DISPLAY), otherwise launches Chromium on this display. Snapshot live DOM nodes, Jev picks the control, this tool clicks that node. Jev is System 1: it acts on its own when confident. When it cannot pick (BLOCKED, torn between options, or about to click something irreversible) the tool returns status need_decision with the candidate options and you choose with fast_web_choose — you are System 2. Offscreen links ranked against the goal are offered and scrolled to on click. Open dialogs/banners are dismissed before typing; controls hidden under them are never offered. When a text field is needed, status is need_text — you write the string and call fast_web_fill. On blocked/budget, or whenever attached, the tab stays open (open: true) — use screenshot computer use on the returned url, same tab. Do not screenshot-click the happy path.",
       inputSchema: z.object({
         url: z
           .string()
@@ -61,6 +61,10 @@ export function createServer(): McpServer {
           .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]))
           .optional()
           .describe("Values you already know for form fields, keyed by name (title, price, tags, email…). Typed into matching fields with no round trip; need_text is only returned for fields nothing here fits. Give everything up front."),
+        files: z
+          .union([z.array(z.string()), z.record(z.string(), z.array(z.string()))])
+          .optional()
+          .describe("Files to attach, as absolute paths on this computer. A list is one group; a map names groups (photos, video…) for forms with several upload slots. Attached directly to the file input, no dialog. Paths are checked before the run starts."),
         maxSteps: z.number().int().min(1).max(40).optional(),
         maxMs: z
           .number()
@@ -83,9 +87,9 @@ export function createServer(): McpServer {
           .describe("Keep the already-open page instead of launching a new browser. Pass a url to navigate that same window. Do not use while status is need_text."),
       }),
     },
-    async ({ url, goal, data, maxSteps, maxMs, fillMode, keepOpen, reuseBrowser }) => {
+    async ({ url, goal, data, files, maxSteps, maxMs, fillMode, keepOpen, reuseBrowser }) => {
       try {
-        const result = await startFastWebTask({ url, goal, data, maxSteps, maxMs, fillMode, keepOpen, reuseBrowser });
+        const result = await startFastWebTask({ url, goal, data, files, maxSteps, maxMs, fillMode, keepOpen, reuseBrowser });
         return jsonResult(result);
       } catch (error) {
         return errorResult(error instanceof Error ? error.message : String(error));

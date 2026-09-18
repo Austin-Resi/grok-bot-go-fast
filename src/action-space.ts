@@ -2,8 +2,11 @@ import type { ChooseUiActionInput, OpenOverlay, Progress, RecentAction, UiElemen
 
 export interface SnapshotAction {
   id: string;
-  kind: "click" | "fill" | "select" | "scroll" | "wait" | "back";
+  kind: "click" | "fill" | "select" | "scroll" | "wait" | "back" | "upload";
   label: string;
+  /** File input: accepted types and whether it takes several files. */
+  accept?: string;
+  multiple?: boolean;
   node?: number;
   role?: string;
   value?: string;
@@ -45,12 +48,15 @@ export interface ActionSpaceOptions {
   progress?: Progress;
   canGoBack?: boolean;
   providedValues?: string[];
+  /** Names of file groups the Bot provided. Without any, file inputs are not offered. */
+  providedFiles?: string[];
 }
 
 const KIND_TO_OPERATION: Record<string, string> = {
   click: "CLICK",
   fill: "TYPE_TEXT",
   select: "SELECT",
+  upload: "UPLOAD",
 };
 
 export const BACK_ACTION: SnapshotAction = {
@@ -109,6 +115,8 @@ export function actionSpace(
     if (node == null) continue;
     // A node already offered from the viewport is never duplicated by the index.
     if (action.offscreen && indices.has(node)) continue;
+    // File inputs are only useful when the Bot brought files.
+    if (action.kind === "upload" && !options.providedFiles?.length) continue;
     if (!indices.has(node)) {
       const index = String(elements.length + 1);
       indices.set(node, index);
@@ -124,6 +132,9 @@ export function actionSpace(
       if (action.expanded != null) element.expanded = action.expanded === true || action.expanded === "true";
       if (action.kind === "select") element.options = [];
       if (action.offscreen) element.offscreen = action.offscreen;
+      if (action.kind === "upload") {
+        element.upload = { accept: action.accept || undefined, multiple: action.multiple === true, files_attached: Number(action.value) || 0 };
+      }
       if (action.main) {
         element.main = true;
         mainContent = true;
@@ -173,6 +184,7 @@ export function actionSpace(
       overlays: [...overlays.values()],
       progress: options.progress,
       providedValues: options.providedValues,
+      providedFiles: options.providedFiles,
     },
     resolve(operation, target) {
       if (operation === "WAIT") return controls.get("WAIT") ?? page.actions.find((a) => a.kind === "wait");

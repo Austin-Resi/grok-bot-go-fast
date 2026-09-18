@@ -29,10 +29,11 @@ e.g. Close, No thanks, I already donated) before any other operation. Never TYPE
 outside an open overlay. A dismiss control that already failed or did not remove the overlay in
 recent_actions should not be chosen again; pick a different dismiss control or continue the goal.`;
 
-export const PROVIDED_VALUES = `The user has supplied values for this form under the names in provided_values. Every empty field
-whose label corresponds to one of those names can be filled now: choose TYPE_TEXT on it (the value is
-supplied after this decision, you never write it). Fill those fields first, then submit. Do not choose
-BLOCKED while such a field is empty.`;
+export const PROVIDED_VALUES = `The user has supplied values for this form under the names in provided_values, and files under the
+names in provided_files. Every empty field whose label corresponds to one of those names can be
+filled now: choose TYPE_TEXT on it (the value is supplied after this decision, you never write it).
+A file_input with files_attached 0 that matches a provided file group takes UPLOAD. Fill those
+fields first, then submit. Do not choose BLOCKED while such a field is empty.`;
 
 export const TARGET = `Choose the best observed target if the next operation is the one specified in this question.
 Use the user's entire goal, field values, nearby text, and recent actions. This question chooses only
