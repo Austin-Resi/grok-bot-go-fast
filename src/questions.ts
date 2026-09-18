@@ -61,14 +61,25 @@ export const ASK_MARGIN = 0.2;
 export const ASK_OPTIONS = 12;
 
 /**
- * Asked only when Jev said BLOCKED, to order the options the Bot sees. Jev's
- * pick here is a hint, not a decision: on pages with nothing goal-shaped it tends
- * to favour "start over" links, so the Bot chooses.
+ * Asked when Jev said BLOCKED on the action question. Reframes the step as a
+ * comparison Jev is good at: which linked page is closer to the goal topic than
+ * this one. Measured 6/6 routes solved unaided (Sourdough→Mars in 3 hops,
+ * Kevin Bacon→Photosynthesis in 11) with median pick probability 0.41.
  */
-export const STEPPING_STONE = `The goal cannot be reached in one click from this page. Choose the link most likely to lead,
-in a few further clicks, to a page that links to the goal topic: the topic itself, a parent or
-container topic, or a closely related topic. Judge by what the linked page is about, not by
-how the link is labelled. Prefer main_content links.`;
+export const STEPPING_STONE = `Each option is a page reachable from here. Choose the page whose subject is closer to the goal
+topic than the current page's subject is. Closer means: the same topic, a topic that contains
+it, or a topic that would normally mention it. Judge by what the linked page is about. Never
+choose a page already listed in visited.`;
+
+/**
+ * Follow Jev's stepping-stone pick unasked at or above this probability. Below
+ * it, hand the options to the Bot. Observed picks that were still forward
+ * progress went as low as 0.13; site-chrome picks cluster around 0.05.
+ */
+export const ROUTE_FLOOR = 0.12;
+
+/** Consecutive stepping-stone hops allowed before checking in with the Bot. */
+export const ROUTE_HOPS = 8;
 
 /** Controls whose activation is hard to undo. The loop asks before clicking them. */
 export const IRREVERSIBLE =

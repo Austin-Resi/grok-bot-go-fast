@@ -87,6 +87,22 @@ test("shouldAsk: torn between targets (Earth page with routing wording: Mars 0.7
   );
 });
 
+test("shouldAsk: a near-tie with site chrome is not a tie (United States page: Mars Exploration Program 0.53 vs Wikipedia logo 0.32)", () => {
+  const ctx = {
+    operation: "CLICK",
+    operationProbabilities: { CLICK: 0.9 },
+    targetProbabilities: { "82": 0.5, "1": 0.35, "3": 0.07 },
+    minMargin: MIN,
+  };
+  assert.equal(shouldAsk(ctx), "torn_target", "without chrome info it looks torn");
+  assert.equal(shouldAsk({ ...ctx, chromeTargets: new Set(["1", "3"]) }), undefined, "chrome excluded, content pick is clear");
+  assert.equal(
+    shouldAsk({ ...ctx, targetProbabilities: { "82": 0.43, "40": 0.28 }, chromeTargets: new Set(["1"]) }),
+    "torn_target",
+    "two content links close together is still a real tie",
+  );
+});
+
 test("shouldAsk: target margin is ignored for operations without a target head", () => {
   assert.equal(
     shouldAsk({ operation: "SCROLL_DOWN", operationProbabilities: { SCROLL_DOWN: 0.9 }, targetProbabilities: { a: 0.5, b: 0.5 }, minMargin: MIN }),

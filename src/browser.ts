@@ -29,6 +29,8 @@ export interface ObserveOptions {
   goal?: string;
   /** How many offscreen candidates to offer. */
   topK?: number;
+  /** How long to wait for a navigating document before giving up. */
+  timeoutMs?: number;
 }
 
 // One CDP client per Chrome. Reconnecting per task leaks connections and, with
@@ -143,14 +145,28 @@ export class FastBrowser {
     if (this.lastUrl != null && url !== this.lastUrl && !this.wentBack) this.navigations += 1;
     this.wentBack = false;
     this.lastUrl = url;
-    const result = await session.send("Runtime.evaluate", {
-      expression: `(${SNAPSHOT})(${JSON.stringify({ goal: opts.goal ?? "", topK: opts.topK })})`,
-      returnByValue: true,
-    });
-    if (result.exceptionDetails) throw new StalePage("Document changed during evaluation");
-    const info = result.result?.value as ObservedPage | null | undefined;
-    if (!info) throw new StalePage("Document is navigating");
-    return info;
+    // A click may have started a navigation. The snapshot returns null until
+    // document.body exists and throws if the document is torn down under it;
+    // wait for the new document instead of failing the step.
+    const expression = `(${SNAPSHOT})(${JSON.stringify({ goal: opts.goal ?? "", topK: opts.topK })})`;
+    const deadline = performance.now() + (opts.timeoutMs ?? 8_000);
+    for (;;) {
+      let info: ObservedPage | null | undefined;
+      let failed = false;
+      try {
+        const result = await session.send("Runtime.evaluate", { expression, returnByValue: true });
+        if (result.exceptionDetails) failed = true;
+        else info = result.result?.value as ObservedPage | null | undefined;
+      } catch {
+        failed = true;
+      }
+      if (info) return info;
+      if (performance.now() >= deadline) {
+        throw new StalePage(failed ? "Document changed during evaluation" : "Document is navigating");
+      }
+      await page.waitForLoadState("domcontentloaded", { timeout: 2_000 }).catch(() => undefined);
+      await page.waitForTimeout(50);
+    }
   }
 
   async act(action: SnapshotAction, text?: string): Promise<void> {
@@ -196,11 +212,16 @@ export class FastBrowser {
       }
     }
 
-    await session.send("Runtime.evaluate", {
-      expression: `(${SETTLE})(${JSON.stringify(action)})`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
+    // SETTLE resolves via requestAnimationFrame. If the click started a navigation
+    // the old document may never paint again; cap the wait rather than hang.
+    await Promise.race([
+      session.send("Runtime.evaluate", {
+        expression: `(${SETTLE})(${JSON.stringify(action)})`,
+        awaitPromise: true,
+        returnByValue: true,
+      }).catch(() => undefined),
+      page.waitForTimeout(1_500),
+    ]);
   }
 
   async close(): Promise<void> {

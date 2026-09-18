@@ -87,7 +87,7 @@ fast_web_choose({ choice: "58", goal: "Reach the United States article, then Mar
 
 `options` are main-content links only, ordered by Jev's own stepping-stone ranking (`probability`) when it had one; site chrome is left out. Passing `goal` narrows the goal for the rest of the run, which is the right move when the original goal needs several hops: name the next stepping stone. Controls: `BACK`, `SCROLL_DOWN`, `SCROLL_UP`, `DONE` (confirm the goal is met), `STOP` (hand off to screenshot computer use). Do not screenshot to answer; the options are the page. Once you choose, Jev takes over again and runs unasked until the next decision it cannot make.
 
-Measured: Earth → Mars finishes in 2 steps with no asks. Green Bay Packers → Mars link-only takes 4 hops and 3 asks (~6s total); Jev finishes alone once a Mars-shaped link appears.
+Measured: Earth → Mars finishes in 2 steps with no asks. Green Bay Packers → Mars link-only takes 4 hops in ~4–9s with zero or one ask; Jev routes the stepping stones itself (Packers → NFL → United States → Mars Exploration Program → Mars). You are asked only for genuine ties and dead ends.
 
 ## Multi-step goals
 

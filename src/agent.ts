@@ -16,6 +16,8 @@ import {
   MAX_STEPS,
   NO_PROGRESS_LIMIT,
   PLAN_TOP_K,
+  ROUTE_FLOOR,
+  ROUTE_HOPS,
   STEPPING_STONE,
 } from "./questions.ts";
 
@@ -81,6 +83,8 @@ export interface RunStats {
   lowConfidence: number;
   failedTargets: number;
   offscreenClicks: number;
+  /** Stepping-stone hops Jev took on its own after a BLOCKED. */
+  routeHops: number;
 }
 
 export interface FastWebTaskResult {
@@ -145,6 +149,10 @@ interface Run {
   topK: number;
   noProgressLimit: number;
   askMargin: number;
+  routeFloor: number;
+  routeHopLimit: number;
+  /** Consecutive stepping-stone hops since the last Bot decision. */
+  routeHops: number;
 }
 
 let active: Run | undefined;
@@ -162,7 +170,7 @@ function runBudgetMs(input: FastWebTaskInput): number {
 }
 
 function freshStats(): RunStats {
-  return { gatewayMs: 0, asks: 0, lowConfidence: 0, failedTargets: 0, offscreenClicks: 0 };
+  return { gatewayMs: 0, asks: 0, lowConfidence: 0, failedTargets: 0, offscreenClicks: 0, routeHops: 0 };
 }
 
 function resetProgress(run: Run, goal: string, maxSteps: number, maxMs: number, fillMode: FillMode): void {
@@ -181,6 +189,7 @@ function resetProgress(run: Run, goal: string, maxSteps: number, maxMs: number, 
   run.visited = [run.page.url];
   run.streak = 0;
   run.scrolledForBlocked = false;
+  run.routeHops = 0;
   run.stats = freshStats();
 }
 
@@ -191,6 +200,8 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
   const topK = numberSetting("PLAN_TOP_K", PLAN_TOP_K, 0, 5000);
   const noProgressLimit = numberSetting("NO_PROGRESS_LIMIT", NO_PROGRESS_LIMIT, 1, 20);
   const askMargin = numberSetting("ASK_MARGIN", ASK_MARGIN, 0, 1);
+  const routeFloor = numberSetting("ROUTE_FLOOR", ROUTE_FLOOR, 0, 1);
+  const routeHopLimit = numberSetting("ROUTE_HOPS", ROUTE_HOPS, 0, 40);
 
   if (input.reuseBrowser) {
     const run = active;
@@ -205,6 +216,8 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
       run.topK = topK;
       run.noProgressLimit = noProgressLimit;
       run.askMargin = askMargin;
+      run.routeFloor = routeFloor;
+      run.routeHopLimit = routeHopLimit;
       run.page = await run.browser.observe({ goal: input.goal, topK });
       resetProgress(run, input.goal, maxSteps, maxMs, fillMode);
       run.keepOpen = input.keepOpen ?? run.keepOpen;
@@ -246,6 +259,9 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
       topK,
       noProgressLimit,
       askMargin,
+      routeFloor,
+      routeHopLimit,
+      routeHops: 0,
     };
     resetProgress(run, input.goal, maxSteps, maxMs, fillMode);
     active = run;
@@ -336,6 +352,7 @@ export async function chooseFastWebTask(input: ChooseInput): Promise<FastWebTask
     // A Bot decision is a fresh start for the gate: the planner has weighed in.
     run.streak = 0;
     run.scrolledForBlocked = false;
+    run.routeHops = 0;
     return await advanceActive();
   } catch (error) {
     await abortFastWebTask();
@@ -371,7 +388,16 @@ async function perform(run: Run, action: SnapshotAction, text?: string, note?: s
     failed = "target was covered or removed before it could be used; it is not offered again";
     run.stats.failedTargets += 1;
   }
-  run.page = await run.browser.observe({ goal: run.goal, topK: run.topK });
+  try {
+    run.page = await run.browser.observe({ goal: run.goal, topK: run.topK });
+  } catch (error) {
+    if (!(error instanceof StalePage)) throw error;
+    // The page never settled (media, long-running navigation). Keep the last
+    // good snapshot, count the step as no progress, and let the loop decide.
+    ok = false;
+    failed = "page did not finish loading after this action";
+    run.stats.failedTargets += 1;
+  }
   const delta = {
     urlChanged: run.page.url !== before.url,
     textChanged: run.page.text !== before.text,
@@ -458,31 +484,60 @@ function describeControls(space: ActionSpace, run: Run): string {
   return controls.join(", ");
 }
 
-/**
- * When Jev said BLOCKED it gave no target ranking. Ask it once, cheaply, to rank
- * the main-content links as stepping stones so the Bot's option list is ordered.
- * Returns probabilities by element index; empty on any failure.
- */
-async function rankSteppingStones(run: Run, space: ActionSpace): Promise<Record<string, number>> {
-  const links = space.input.elements.filter(
-    (e) => e.operations.includes("CLICK") && !e.overlay && (e.main || e.offscreen) && e.role !== "button",
-  );
-  if (links.length < 2) return {};
-  const criteria: Record<string, unknown> = {};
-  for (const e of links.slice(0, 250)) {
-    criteria[e.index] = { link: e.label.replace(/\s+/g, " ").slice(0, 60), href: e.href, main_content: e.main };
+/** Human-readable page title from a link, so Jev judges the destination, not the anchor text. */
+function pageTitle(href: string | undefined, label: string): string {
+  if (href) {
+    try {
+      const path = decodeURIComponent(new URL(href, "https://x/").pathname);
+      const last = path.split("/").filter(Boolean).pop();
+      if (last && !/\.\w{2,5}$/.test(last)) return last.replace(/[_-]+/g, " ").slice(0, 80);
+    } catch {
+      /* fall through to label */
+    }
   }
+  return label.replace(/\s+/g, " ").slice(0, 80);
+}
+
+function visitedTitles(run: Run): string[] {
+  return run.visited.map((u) => pageTitle(u, u));
+}
+
+interface SteppingStone {
+  probabilities: Record<string, number>;
+  pick?: { index: string; probability: number };
+}
+
+/**
+ * When Jev said BLOCKED on the action question, ask it the routing question
+ * instead: which reachable page is closer to the goal. Main-content links only,
+ * pages already visited excluded. Returns Jev's ranking and its top pick.
+ */
+async function rankSteppingStones(run: Run, space: ActionSpace): Promise<SteppingStone> {
+  const visited = new Set(visitedTitles(run));
+  const links = space.input.elements.filter(
+    (e) =>
+      e.operations.includes("CLICK") &&
+      !e.overlay &&
+      (e.main || e.offscreen) &&
+      e.role !== "button" &&
+      !visited.has(pageTitle(e.href, e.label)),
+  );
+  if (links.length < 2) return { probabilities: {} };
+  const criteria: Record<string, unknown> = {};
+  for (const e of links.slice(0, 250)) criteria[e.index] = { page: pageTitle(e.href, e.label) };
   try {
     const started = performance.now();
     const result = await evaluateWithGateway({
-      state: { page: { url: run.page.url, title: run.page.title }, goal: run.goal, visited: run.visited.slice(-6) },
+      state: { current_page: pageTitle(run.page.url, run.page.title), goal: run.goal, visited: [...visited].slice(-8) },
       questions: { stepping_stone: { type: "choice", instructions: STEPPING_STONE, criteria } },
     });
     run.stats.gatewayMs += Math.round(performance.now() - started);
-    const answer = result.answers.stepping_stone as { probabilities?: Record<string, number> } | undefined;
-    return answer?.probabilities ?? {};
+    const answer = result.answers.stepping_stone as { choice?: string; probabilities?: Record<string, number> } | undefined;
+    const probabilities = answer?.probabilities ?? {};
+    const pick = answer?.choice ? { index: answer.choice, probability: probabilities[answer.choice] ?? 0 } : undefined;
+    return { probabilities, pick };
   } catch {
-    return {};
+    return { probabilities: {} };
   }
 }
 
@@ -541,7 +596,7 @@ async function advanceActive(): Promise<FastWebTaskResult> {
       // The gate tripped: stop guessing, hand the page to the planner with options.
       if (run.streak >= run.noProgressLimit) {
         const ranked = await rankSteppingStones(run, space);
-        return ask(run, space, "blocked", { operation: "BLOCKED", target: null, confidence: null, targetProbabilities: ranked }, 0,
+        return ask(run, space, "blocked", { operation: "BLOCKED", target: null, confidence: null, targetProbabilities: ranked.probabilities }, 0,
           `No progress after ${run.streak} consecutive steps`);
       }
 
@@ -570,23 +625,43 @@ async function advanceActive(): Promise<FastWebTaskResult> {
         operationProbabilities: decision.operationProbabilities,
         targetProbabilities: decision.targetProbabilities,
         minMargin: run.askMargin,
+        chromeTargets: new Set(space.input.elements.filter((e) => !e.main && !e.overlay).map((e) => e.index)),
       });
 
       if (askReason === "blocked") {
-        // One free scroll: cheap, reversible, and sometimes the goal is just below.
-        // Jev already saw the offscreen shortlist, so this is only worth doing once.
+        // Jev will not plan a route on the action question, but it routes well when
+        // asked "which page is closer to the goal". Follow that pick while it is
+        // confident enough and we have not wandered too long.
+        const ranked = await rankSteppingStones(run, space);
+        const pick = ranked.pick;
+        const stone = pick && pick.probability >= run.routeFloor ? space.resolve("CLICK", pick.index) : undefined;
+        if (pick && stone && run.routeHops < run.routeHopLimit) {
+          run.routeHops += 1;
+          run.stats.routeHops += 1;
+          const note = `route: "${pageTitle(stone.href, stone.label)}" is closer to the goal (p=${pick.probability.toFixed(2)})`;
+          const outcome = await perform(run, stone, undefined, note);
+          record(run, "CLICK", pick.index, `CLICK [${pick.index}]`, pick.probability, latencyMs, outcome, note);
+          run.step += 1;
+          continue;
+        }
+        // No route either. One free scroll before asking: the routing question only
+        // saw the shortlist, and the answer may be a control further down.
         if (!run.scrolledForBlocked && space.canScroll("down")) {
           run.scrolledForBlocked = true;
           const scroll = space.resolve("SCROLL_DOWN", null)!;
-          const note = "Jev chose BLOCKED; scrolling once before asking";
+          const note = "Jev chose BLOCKED and found no route; scrolling once before asking";
           const outcome = await perform(run, scroll, undefined, note);
           record(run, "SCROLL_DOWN", null, "SCROLL_DOWN", decision.confidence, latencyMs, outcome, note);
           run.step += 1;
           continue;
         }
         record(run, "BLOCKED", null, "BLOCKED", decision.confidence, latencyMs, undefined, "asked the Bot");
-        const ranked = await rankSteppingStones(run, space);
-        return ask(run, space, "blocked", { ...decision, targetProbabilities: ranked }, latencyMs, "Jev cannot advance the goal in one step from this page");
+        const why =
+          stone && run.routeHops >= run.routeHopLimit
+            ? `${run.routeHops} stepping-stone hops without reaching the goal; checking in`
+            : "Jev cannot advance the goal in one step from this page";
+        run.routeHops = 0;
+        return ask(run, space, "blocked", { ...decision, targetProbabilities: ranked.probabilities }, latencyMs, why);
       }
 
       const action = space.resolve(decision.operation, decision.target);

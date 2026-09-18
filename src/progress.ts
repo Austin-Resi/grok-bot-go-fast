@@ -24,6 +24,12 @@ export interface AskContext {
   targetProbabilities: Record<string, number>;
   /** Below this gap between first and second choice, System 1 is torn. */
   minMargin: number;
+  /**
+   * Target indexes that are site chrome (nav, header, footer). A near-tie with
+   * chrome is not a real tie: Jev is saying "this or start over", and the
+   * content pick wins.
+   */
+  chromeTargets?: ReadonlySet<string>;
 }
 
 export type AskReason = "blocked" | "torn_operation" | "torn_target";
@@ -40,7 +46,10 @@ export function shouldAsk(ctx: AskContext): AskReason | undefined {
   const opGap = margin(ctx.operationProbabilities);
   if (opGap != null && opGap < ctx.minMargin) return "torn_operation";
   if (ctx.operation === "CLICK" || ctx.operation === "SELECT") {
-    const targetGap = margin(ctx.targetProbabilities);
+    const content = ctx.chromeTargets
+      ? Object.fromEntries(Object.entries(ctx.targetProbabilities).filter(([index]) => !ctx.chromeTargets!.has(index)))
+      : ctx.targetProbabilities;
+    const targetGap = margin(content);
     if (targetGap != null && targetGap < ctx.minMargin) return "torn_target";
   }
   return undefined;
