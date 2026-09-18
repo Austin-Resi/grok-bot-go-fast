@@ -6,8 +6,18 @@ import { setting } from "./env.ts";
 import { evaluateWithGateway } from "./evaluate.ts";
 import { fieldText } from "./fill-text.ts";
 import { resolveUiDecision } from "./format.ts";
-import { freshRecovery, madeProgress, recoveryFor, type RecoveryTried } from "./progress.ts";
-import { LOW_CONFIDENCE, MAX_RUN_MS, MAX_STEPS, NO_PROGRESS_LIMIT, PLAN_TOP_K } from "./questions.ts";
+import { madeProgress, shouldAsk, type AskReason } from "./progress.ts";
+import {
+  ASK_MARGIN,
+  ASK_OPTIONS,
+  IRREVERSIBLE,
+  LOW_CONFIDENCE,
+  MAX_RUN_MS,
+  MAX_STEPS,
+  NO_PROGRESS_LIMIT,
+  PLAN_TOP_K,
+  STEPPING_STONE,
+} from "./questions.ts";
 
 export type FillMode = "bot" | "helper";
 
@@ -42,16 +52,39 @@ export interface NeedTextField {
   value?: string;
 }
 
+/** One option the Bot can pick in a need_decision. */
+export interface DecisionOption {
+  /** Pass this to fast_web_choose. */
+  index: string;
+  operation: string;
+  label: string;
+  role?: string;
+  href?: string;
+  offscreen?: "above" | "below";
+  main?: boolean;
+  /** Jev's probability for this option, when it gave one. */
+  probability?: number;
+}
+
+export interface NeedDecision {
+  reason: AskReason | "irreversible";
+  /** Jev's own pick, when it had one. Confirming it is a valid answer. */
+  jev?: { operation: string; index: string | null; label?: string; confidence: number | null };
+  options: DecisionOption[];
+  /** Always available: BACK (if history), SCROLL_DOWN/UP (if scrollable), DONE, STOP. */
+  controls: string[];
+}
+
 export interface RunStats {
   gatewayMs: number;
-  recoveries: number;
+  asks: number;
   lowConfidence: number;
   failedTargets: number;
   offscreenClicks: number;
 }
 
 export interface FastWebTaskResult {
-  status: "done" | "blocked" | "budget" | "need_text";
+  status: "done" | "blocked" | "budget" | "need_text" | "need_decision";
   url: string;
   title: string;
   text: string;
@@ -60,6 +93,7 @@ export interface FastWebTaskResult {
   reason?: string;
   next?: string;
   field?: NeedTextField;
+  decision?: NeedDecision;
   goal?: string;
   open?: boolean;
   attached?: boolean;
@@ -78,6 +112,13 @@ interface PendingFill {
   latencyMs: number;
 }
 
+interface PendingDecision {
+  space: ActionSpace;
+  options: DecisionOption[];
+  latencyMs: number;
+  confidence: number | null;
+}
+
 interface Run {
   browser: FastBrowser;
   goal: string;
@@ -91,16 +132,19 @@ interface Run {
   steps: FastWebStep[];
   started: number;
   pending: PendingFill | undefined;
+  decision: PendingDecision | undefined;
   keepOpen: boolean | undefined;
   /** Overlays whose dismiss control the loop already clicked on its own. */
   dismissTried: Set<number>;
   visited: string[];
   /** Consecutive steps that changed neither URL nor content. */
   streak: number;
-  recovery: RecoveryTried;
+  /** Whether the free scroll-and-re-ask has been used since the last progress. */
+  scrolledForBlocked: boolean;
   stats: RunStats;
   topK: number;
   noProgressLimit: number;
+  askMargin: number;
 }
 
 let active: Run | undefined;
@@ -118,7 +162,7 @@ function runBudgetMs(input: FastWebTaskInput): number {
 }
 
 function freshStats(): RunStats {
-  return { gatewayMs: 0, recoveries: 0, lowConfidence: 0, failedTargets: 0, offscreenClicks: 0 };
+  return { gatewayMs: 0, asks: 0, lowConfidence: 0, failedTargets: 0, offscreenClicks: 0 };
 }
 
 function resetProgress(run: Run, goal: string, maxSteps: number, maxMs: number, fillMode: FillMode): void {
@@ -132,10 +176,11 @@ function resetProgress(run: Run, goal: string, maxSteps: number, maxMs: number, 
   run.started = performance.now();
   run.deadline = run.started + maxMs;
   run.pending = undefined;
+  run.decision = undefined;
   run.dismissTried = new Set();
   run.visited = [run.page.url];
   run.streak = 0;
-  run.recovery = freshRecovery();
+  run.scrolledForBlocked = false;
   run.stats = freshStats();
 }
 
@@ -143,8 +188,9 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
   const fillMode = input.fillMode ?? "bot";
   const maxSteps = Math.min(input.maxSteps ?? MAX_STEPS, MAX_STEPS);
   const maxMs = runBudgetMs(input);
-  const topK = numberSetting("PLAN_TOP_K", PLAN_TOP_K, 0, 120);
+  const topK = numberSetting("PLAN_TOP_K", PLAN_TOP_K, 0, 5000);
   const noProgressLimit = numberSetting("NO_PROGRESS_LIMIT", NO_PROGRESS_LIMIT, 1, 20);
+  const askMargin = numberSetting("ASK_MARGIN", ASK_MARGIN, 0, 1);
 
   if (input.reuseBrowser) {
     const run = active;
@@ -158,6 +204,7 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
       if (input.url) await run.browser.goto(input.url);
       run.topK = topK;
       run.noProgressLimit = noProgressLimit;
+      run.askMargin = askMargin;
       run.page = await run.browser.observe({ goal: input.goal, topK });
       resetProgress(run, input.goal, maxSteps, maxMs, fillMode);
       run.keepOpen = input.keepOpen ?? run.keepOpen;
@@ -189,14 +236,16 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
       steps: [],
       started: 0,
       pending: undefined,
+      decision: undefined,
       keepOpen: input.keepOpen,
       dismissTried: new Set(),
       visited: [],
       streak: 0,
-      recovery: freshRecovery(),
+      scrolledForBlocked: false,
       stats: freshStats(),
       topK,
       noProgressLimit,
+      askMargin,
     };
     resetProgress(run, input.goal, maxSteps, maxMs, fillMode);
     active = run;
@@ -223,6 +272,75 @@ export async function fillFastWebTask(text: string): Promise<FastWebTaskResult> 
     throw error;
   }
   return await advanceActive();
+}
+
+export interface ChooseInput {
+  /** An option index from need_decision, or a control: BACK, SCROLL_DOWN, SCROLL_UP, DONE, STOP. */
+  choice: string;
+  /** Optionally narrow the goal for the remaining steps (e.g. the next stepping stone). */
+  goal?: string;
+}
+
+/** Answer a need_decision. The Bot is System 2 here; its pick is executed unasked. */
+export async function chooseFastWebTask(input: ChooseInput): Promise<FastWebTaskResult> {
+  const run = active;
+  if (!run?.decision) {
+    throw new Error("No decision is waiting. fast_web_choose answers a need_decision result.");
+  }
+  const pending = run.decision;
+  run.decision = undefined;
+  run.deadline = performance.now() + run.maxMs;
+  if (input.goal?.trim()) run.goal = input.goal.trim();
+  const choice = input.choice.trim().toUpperCase();
+
+  try {
+    if (choice === "STOP") return await stop("blocked", run, "The Bot stopped this run.");
+    if (choice === "DONE") {
+      record(run, "DONE", null, "DONE", pending.confidence, pending.latencyMs, undefined, "confirmed by the Bot");
+      return await stop("done", run);
+    }
+
+    let action: SnapshotAction | undefined;
+    let operation: string;
+    let target: string | null = null;
+    if (choice === "BACK" || choice === "SCROLL_DOWN" || choice === "SCROLL_UP") {
+      operation = choice;
+      action = pending.space.resolve(choice, null);
+    } else {
+      const option = pending.options.find((o) => o.index === input.choice.trim());
+      if (!option) {
+        throw new Error(`"${input.choice}" is not an offered option. Use an index from decision.options or one of ${describeControls(pending.space, run)}.`);
+      }
+      operation = option.operation;
+      target = option.index;
+      action = pending.space.resolve(option.operation, option.index);
+    }
+    if (!action) throw new Error(`"${input.choice}" is not available on this page any more.`);
+
+    const note = "chosen by the Bot";
+    if (action.kind === "fill") {
+      run.pending = { action, execute: `TYPE_TEXT [${target}]`, operation: "TYPE_TEXT", target, confidence: pending.confidence, latencyMs: pending.latencyMs };
+      if (run.fillMode === "bot") return needText(run);
+      const text = await fieldText({
+        goal: run.goal,
+        field: { label: action.label, role: action.role, value: action.value },
+        page: { title: run.page.title, text: run.page.text.slice(0, 6000) },
+        recentActions: run.history,
+      });
+      await applyFill(run, text);
+    } else {
+      const outcome = await perform(run, action, undefined, note);
+      record(run, operation, target, target ? `${operation} [${target}]` : operation, pending.confidence, pending.latencyMs, outcome, note);
+      run.step += 1;
+    }
+    // A Bot decision is a fresh start for the gate: the planner has weighed in.
+    run.streak = 0;
+    run.scrolledForBlocked = false;
+    return await advanceActive();
+  } catch (error) {
+    await abortFastWebTask();
+    throw error;
+  }
 }
 
 export async function abortFastWebTask(): Promise<void> {
@@ -262,15 +380,10 @@ async function perform(run: Run, action: SnapshotAction, text?: string, note?: s
   if (delta.urlChanged && run.visited[run.visited.length - 1] !== run.page.url) run.visited.push(run.page.url);
   if (progressed) {
     run.streak = 0;
-    run.recovery = freshRecovery();
+    run.scrolledForBlocked = false;
   } else {
     run.streak += 1;
   }
-  if (action.kind === "scroll") {
-    if ((action.delta ?? 0) >= 0) run.recovery.scrollDown = true;
-    else run.recovery.scrollUp = true;
-  }
-  if (action.kind === "back") run.recovery.back = true;
   if (ok && action.offscreen) run.stats.offscreenClicks += 1;
 
   run.history.push({
@@ -337,6 +450,79 @@ function progressState(run: Run): Progress {
   };
 }
 
+function describeControls(space: ActionSpace, run: Run): string {
+  const controls = ["DONE", "STOP"];
+  if (run.browser.canGoBack) controls.unshift("BACK");
+  if (space.canScroll("up")) controls.unshift("SCROLL_UP");
+  if (space.canScroll("down")) controls.unshift("SCROLL_DOWN");
+  return controls.join(", ");
+}
+
+/**
+ * When Jev said BLOCKED it gave no target ranking. Ask it once, cheaply, to rank
+ * the main-content links as stepping stones so the Bot's option list is ordered.
+ * Returns probabilities by element index; empty on any failure.
+ */
+async function rankSteppingStones(run: Run, space: ActionSpace): Promise<Record<string, number>> {
+  const links = space.input.elements.filter(
+    (e) => e.operations.includes("CLICK") && !e.overlay && (e.main || e.offscreen) && e.role !== "button",
+  );
+  if (links.length < 2) return {};
+  const criteria: Record<string, unknown> = {};
+  for (const e of links.slice(0, 250)) {
+    criteria[e.index] = { link: e.label.replace(/\s+/g, " ").slice(0, 60), href: e.href, main_content: e.main };
+  }
+  try {
+    const started = performance.now();
+    const result = await evaluateWithGateway({
+      state: { page: { url: run.page.url, title: run.page.title }, goal: run.goal, visited: run.visited.slice(-6) },
+      questions: { stepping_stone: { type: "choice", instructions: STEPPING_STONE, criteria } },
+    });
+    run.stats.gatewayMs += Math.round(performance.now() - started);
+    const answer = result.answers.stepping_stone as { probabilities?: Record<string, number> } | undefined;
+    return answer?.probabilities ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Build the option list for a need_decision: main-content links ordered by
+ * Jev's probability, then the goal-ranked offscreen shortlist, then remaining
+ * main-content viewport controls. Site chrome is left out; the Bot has BACK,
+ * SCROLL and STOP as controls. Deduped by element index.
+ */
+function decisionOptions(space: ActionSpace, probabilities: Record<string, number>, operation: string): DecisionOption[] {
+  const byIndex = new Map(space.input.elements.map((e) => [e.index, e]));
+  const seen = new Set<string>();
+  const out: DecisionOption[] = [];
+  const push = (index: string, op: string, probability?: number) => {
+    if (seen.has(index) || out.length >= ASK_OPTIONS) return;
+    const element = byIndex.get(index);
+    if (!element || !element.operations.includes(op)) return;
+    seen.add(index);
+    out.push({
+      index,
+      operation: op,
+      label: element.label.replace(/\s+/g, " ").slice(0, 80),
+      role: element.role,
+      href: element.href,
+      offscreen: element.offscreen,
+      main: element.main,
+      probability,
+    });
+  };
+  const clickOp = operation === "SELECT" || operation === "TYPE_TEXT" ? operation : "CLICK";
+  for (const [index, p] of Object.entries(probabilities).sort((a, b) => b[1] - a[1])) {
+    if (p >= 0.01) push(index, clickOp, p);
+  }
+  for (const c of space.offscreenCandidates()) push(c.index, "CLICK");
+  for (const e of space.input.elements) {
+    if (e.main && !e.offscreen && e.operations.includes("CLICK")) push(e.index, "CLICK");
+  }
+  return out;
+}
+
 async function advanceActive(): Promise<FastWebTaskResult> {
   const run = active;
   if (!run) throw new Error("No active web task");
@@ -346,24 +532,22 @@ async function advanceActive(): Promise<FastWebTaskResult> {
       if (performance.now() >= run.deadline) {
         return await stop("budget", run, `Stopped after ${Math.round(run.maxMs / 1000)}s of wall-clock time`);
       }
-      if (run.streak >= run.noProgressLimit) {
-        return await stop(
-          "blocked",
-          run,
-          `No progress after ${run.streak} consecutive steps. Use screenshot computer use on this page.`,
-        );
-      }
 
       const space = actionSpace(run.page, run.goal, run.history, {
         progress: progressState(run),
         canGoBack: run.browser.canGoBack,
       });
+
+      // The gate tripped: stop guessing, hand the page to the planner with options.
+      if (run.streak >= run.noProgressLimit) {
+        const ranked = await rankSteppingStones(run, space);
+        return ask(run, space, "blocked", { operation: "BLOCKED", target: null, confidence: null, targetProbabilities: ranked }, 0,
+          `No progress after ${run.streak} consecutive steps`);
+      }
+
       const built = buildUiActionQuestions(space.input);
       const started = performance.now();
-      const decided = await evaluateWithGateway({
-        state: built.state,
-        questions: built.questions,
-      });
+      const decided = await evaluateWithGateway({ state: built.state, questions: built.questions });
       const latencyMs = Math.round(performance.now() - started);
       run.stats.gatewayMs += latencyMs;
       const decision = resolveUiDecision(decided.answers, decided.confidence);
@@ -381,41 +565,28 @@ async function advanceActive(): Promise<FastWebTaskResult> {
         return await stop("done", run);
       }
 
-      if (decision.operation === "BLOCKED" || !decision.operation) {
-        const candidates = space.offscreenCandidates();
-        const recovery = recoveryFor({
-          streak: run.streak,
-          limit: run.noProgressLimit,
-          canScrollDown: space.canScroll("down"),
-          canScrollUp: space.canScroll("up"),
-          canGoBack: run.browser.canGoBack,
-          tried: run.recovery,
-          candidates,
-          deadEnd: candidates.length === 0 && !space.hasMainContent(),
-        });
-        if ("stop" in recovery) {
-          record(run, "BLOCKED", null, "BLOCKED", decision.confidence, latencyMs);
-          return await stop("blocked", run, `${recovery.reason}. Use screenshot computer use on this page.`);
+      const askReason = shouldAsk({
+        operation: decision.operation,
+        operationProbabilities: decision.operationProbabilities,
+        targetProbabilities: decision.targetProbabilities,
+        minMargin: run.askMargin,
+      });
+
+      if (askReason === "blocked") {
+        // One free scroll: cheap, reversible, and sometimes the goal is just below.
+        // Jev already saw the offscreen shortlist, so this is only worth doing once.
+        if (!run.scrolledForBlocked && space.canScroll("down")) {
+          run.scrolledForBlocked = true;
+          const scroll = space.resolve("SCROLL_DOWN", null)!;
+          const note = "Jev chose BLOCKED; scrolling once before asking";
+          const outcome = await perform(run, scroll, undefined, note);
+          record(run, "SCROLL_DOWN", null, "SCROLL_DOWN", decision.confidence, latencyMs, outcome, note);
+          run.step += 1;
+          continue;
         }
-        let action: SnapshotAction | undefined;
-        let target: string | null = null;
-        if (recovery.operation === "CLICK") {
-          run.recovery.candidates.add(recovery.candidate.node);
-          action = space.resolve("CLICK", recovery.candidate.index);
-          target = recovery.candidate.index;
-        } else {
-          action = space.resolve(recovery.operation, null);
-        }
-        if (!action) {
-          record(run, "BLOCKED", null, "BLOCKED", decision.confidence, latencyMs);
-          return await stop("blocked", run, "Jev could not progress on this page. Use screenshot computer use.");
-        }
-        run.stats.recoveries += 1;
-        const outcome = await perform(run, action, undefined, recovery.reason);
-        const execute = target ? `${recovery.operation} [${target}]` : recovery.operation;
-        record(run, recovery.operation, target, execute, decision.confidence, latencyMs, outcome, recovery.reason);
-        run.step += 1;
-        continue;
+        record(run, "BLOCKED", null, "BLOCKED", decision.confidence, latencyMs, undefined, "asked the Bot");
+        const ranked = await rankSteppingStones(run, space);
+        return ask(run, space, "blocked", { ...decision, targetProbabilities: ranked }, latencyMs, "Jev cannot advance the goal in one step from this page");
       }
 
       const action = space.resolve(decision.operation, decision.target);
@@ -433,6 +604,18 @@ async function advanceActive(): Promise<FastWebTaskResult> {
         record(run, decision.operation, decision.target, execute, decision.confidence, latencyMs, undefined, "no live node");
         run.step += 1;
         continue;
+      }
+
+      if (askReason) {
+        record(run, decision.operation, decision.target, execute, decision.confidence, latencyMs, undefined, `asked the Bot (${askReason})`);
+        return ask(run, space, askReason, decision, latencyMs, askReason === "torn_operation"
+          ? "Jev is torn between operations"
+          : "Jev is torn between targets");
+      }
+
+      if (action.kind === "click" && IRREVERSIBLE.test(action.label.trim())) {
+        record(run, decision.operation, decision.target, execute, decision.confidence, latencyMs, undefined, "asked the Bot (irreversible)");
+        return ask(run, space, "irreversible", decision, latencyMs, `"${action.label}" is hard to undo; confirm before clicking`);
       }
 
       if (await dismissBeforeTyping(run, space, action, decision.confidence, latencyMs)) continue;
@@ -480,6 +663,41 @@ async function advanceActive(): Promise<FastWebTaskResult> {
     await abortFastWebTask();
     throw error;
   }
+}
+
+function ask(
+  run: Run,
+  space: ActionSpace,
+  reason: NeedDecision["reason"],
+  decision: { operation: string; target: string | null; confidence: number | null; targetProbabilities: Record<string, number> },
+  latencyMs: number,
+  why: string,
+): FastWebTaskResult {
+  const options = decisionOptions(space, decision.targetProbabilities, decision.operation);
+  run.decision = { space, options, latencyMs, confidence: decision.confidence };
+  run.stats.asks += 1;
+  const jevLabel = decision.target ? space.input.elements.find((e) => e.index === decision.target)?.label : undefined;
+  return {
+    ...snapshot(run),
+    status: "need_decision",
+    reason: why,
+    decision: {
+      reason,
+      jev:
+        decision.operation && decision.operation !== "BLOCKED"
+          ? { operation: decision.operation, index: decision.target, label: jevLabel, confidence: decision.confidence }
+          : undefined,
+      options,
+      controls: describeControls(space, run).split(", "),
+    },
+    next:
+      reason === "irreversible"
+        ? `Jev wants to click "${jevLabel}". Confirm with fast_web_choose({ choice: "${decision.target}" }) or pick another option / STOP.`
+        : "You are the planner here. Pick the option that best advances the goal: fast_web_choose({ choice: <index> }). You may also pass a narrower goal for the next steps. Controls: " +
+          describeControls(space, run) +
+          ". Do not screenshot; the options are the page.",
+    open: true,
+  };
 }
 
 function record(
@@ -538,11 +756,12 @@ function needText(run: Run): FastWebTaskResult {
 }
 
 async function stop(
-  status: Exclude<FastWebTaskResult["status"], "need_text">,
+  status: Exclude<FastWebTaskResult["status"], "need_text" | "need_decision">,
   run: Run,
   reason?: string,
 ): Promise<FastWebTaskResult> {
   run.pending = undefined;
+  run.decision = undefined;
   // Default: keep the tab for handoff when it is the Bot's Chrome, or when the
   // run did not finish. A done run in crack-bot's own Chromium has nothing to hand off.
   const keepOpen = run.keepOpen ?? (run.browser.attached || status !== "done");
@@ -559,7 +778,7 @@ async function stop(
 }
 
 function stopNext(
-  status: Exclude<FastWebTaskResult["status"], "need_text">,
+  status: Exclude<FastWebTaskResult["status"], "need_text" | "need_decision">,
   run: Run,
   keepOpen: boolean,
 ): string | undefined {

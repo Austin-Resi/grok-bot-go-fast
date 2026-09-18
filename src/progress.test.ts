@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { freshRecovery, madeProgress, recoveryFor, type RecoveryContext } from "./progress.ts";
+import { madeProgress, margin, shouldAsk } from "./progress.ts";
 
 test("madeProgress: URL change always counts, content change only for page actions", () => {
   assert.equal(madeProgress("click", { urlChanged: true, textChanged: false }, true), true);
@@ -12,63 +12,84 @@ test("madeProgress: URL change always counts, content change only for page actio
   assert.equal(madeProgress("click", { urlChanged: true, textChanged: true }, false), false, "a failed action never counts");
 });
 
-const northAmerica = (over: Partial<RecoveryContext> = {}): RecoveryContext => ({
-  streak: 0,
-  limit: 3,
-  canScrollDown: true,
-  canScrollUp: false,
-  canGoBack: true,
-  tried: freshRecovery(),
-  candidates: [
-    { index: "80", node: 900, label: "Earth", score: 5.5 },
-    { index: "81", node: 901, label: "Continent", score: 1.5 },
-  ],
-  deadEnd: false,
-  ...over,
+test("margin is the gap between the top two probabilities", () => {
+  assert.equal(margin({ a: 0.98, b: 0.01, c: 0.01 }), 0.97);
+  assert.equal(margin({ a: 0.54, b: 0.37, c: 0.05 })?.toFixed(2), "0.17");
+  assert.equal(margin({ a: 1 }), undefined);
 });
 
-test("soak regression: BLOCKED after a valid hop tries goal-ranked links, never BACK", () => {
-  // United States -> North America was a valid hop; the page has candidates.
-  const ctx = northAmerica();
-  let r = recoveryFor(ctx);
-  assert.ok("candidate" in r && r.candidate.label === "Earth", "best goal-ranked offscreen link first");
-  ctx.tried.candidates.add(900);
+// Numbers below are Jev's real answers on Wikipedia pages (2026-09-17).
+const MIN = 0.2;
 
-  r = recoveryFor({ ...ctx, streak: 1 });
-  assert.ok("candidate" in r && r.candidate.label === "Continent", "then the next candidate");
-  ctx.tried.candidates.add(901);
-
-  r = recoveryFor({ ...ctx, streak: 2 });
-  assert.ok("operation" in r && r.operation === "SCROLL_DOWN", "then scroll");
-  ctx.tried.scrollDown = true;
-
-  r = recoveryFor({ ...ctx, streak: 2 });
-  assert.ok("stop" in r, "BACK is not offered on a page that has goal-shaped controls");
+test("shouldAsk: a present goal link (Earth page, Mars goal) is not asked", () => {
+  assert.equal(
+    shouldAsk({
+      operation: "CLICK",
+      operationProbabilities: { CLICK: 0.98, SCROLL_DOWN: 0.01, TYPE_TEXT: 0.01 },
+      targetProbabilities: { "75": 0.98, "3": 0.01, "40": 0.01 },
+      minMargin: MIN,
+    }),
+    undefined,
+  );
 });
 
-test("BACK only on a dead end, after candidates and scrolls are exhausted", () => {
-  const tried = freshRecovery();
-  tried.scrollDown = true;
-  const ctx = northAmerica({ candidates: [], deadEnd: true, tried, canScrollDown: true, canScrollUp: false });
-  const r = recoveryFor(ctx);
-  assert.ok("operation" in r && r.operation === "BACK");
-  tried.back = true;
-  assert.ok("stop" in recoveryFor(ctx), "BACK is tried once");
+test("shouldAsk: a low-but-unambiguous pick is not asked", () => {
+  assert.equal(
+    shouldAsk({
+      operation: "CLICK",
+      operationProbabilities: { CLICK: 0.6, BLOCKED: 0.3 },
+      targetProbabilities: { "12": 0.4, "7": 0.05, "9": 0.05 },
+      minMargin: MIN,
+    }),
+    undefined,
+    "0.40 vs 0.05 across many options is decisive",
+  );
 });
 
-test("a dead end without history stops instead of BACK", () => {
-  const tried = freshRecovery();
-  tried.scrollDown = true;
-  const r = recoveryFor(northAmerica({ candidates: [], deadEnd: true, tried, canGoBack: false }));
-  assert.ok("stop" in r);
+test("shouldAsk: BLOCKED always asks (Packers page, link-only Mars goal)", () => {
+  assert.equal(
+    shouldAsk({ operation: "BLOCKED", operationProbabilities: { BLOCKED: 0.86, CLICK: 0.09 }, targetProbabilities: {}, minMargin: MIN }),
+    "blocked",
+  );
+  assert.equal(shouldAsk({ operation: "", operationProbabilities: {}, targetProbabilities: {}, minMargin: MIN }), "blocked");
 });
 
-test("recovery stops as soon as the no-progress gate trips", () => {
-  const r = recoveryFor(northAmerica({ streak: 3 }));
-  assert.ok("stop" in r && /No progress after 3/.test(r.reason));
+test("shouldAsk: torn between operations (United States page: BLOCKED 0.54 vs CLICK 0.37)", () => {
+  assert.equal(
+    shouldAsk({
+      operation: "CLICK",
+      operationProbabilities: { CLICK: 0.54, BLOCKED: 0.37, SCROLL_DOWN: 0.05 },
+      targetProbabilities: { "20": 0.9 },
+      minMargin: MIN,
+    }),
+    "torn_operation",
+  );
 });
 
-test("scroll recovery skips directions that are not available", () => {
-  const r = recoveryFor(northAmerica({ candidates: [], canScrollDown: false, canScrollUp: true }));
-  assert.ok("operation" in r && r.operation === "SCROLL_UP");
+test("shouldAsk: torn between targets (Earth page with routing wording: Mars 0.78 vs Solar System 0.19 is NOT torn; 0.45 vs 0.40 is)", () => {
+  assert.equal(
+    shouldAsk({
+      operation: "CLICK",
+      operationProbabilities: { CLICK: 0.98 },
+      targetProbabilities: { "75": 0.78, "40": 0.19, "41": 0.03 },
+      minMargin: MIN,
+    }),
+    undefined,
+  );
+  assert.equal(
+    shouldAsk({
+      operation: "CLICK",
+      operationProbabilities: { CLICK: 0.98 },
+      targetProbabilities: { "75": 0.45, "40": 0.4, "41": 0.15 },
+      minMargin: MIN,
+    }),
+    "torn_target",
+  );
+});
+
+test("shouldAsk: target margin is ignored for operations without a target head", () => {
+  assert.equal(
+    shouldAsk({ operation: "SCROLL_DOWN", operationProbabilities: { SCROLL_DOWN: 0.9 }, targetProbabilities: { a: 0.5, b: 0.5 }, minMargin: MIN }),
+    undefined,
+  );
 });

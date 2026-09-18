@@ -6,7 +6,7 @@
 2. One Gateway evaluate call: operation + speculative targets
 3. Click the stored node (hit-test just before input)
 4. Short wait (autocomplete ≤200ms, otherwise ~50ms)
-5. Repeat until DONE, BLOCKED, or TYPE_TEXT
+5. Repeat until DONE, TYPE_TEXT (`need_text`), or a decision Jev cannot make (`need_decision`)
 
 Jev never sees pixels. Model output never becomes a selector, coordinate, or script.
 
@@ -18,7 +18,15 @@ The snapshot hit-tests every line box of a control (so wrapped inline links stay
 
 Jev sees two kinds of element each step: hittable controls in the viewport, and up to `CRACK_BOT_PLAN_TOP_K` (32) **offscreen** links/buttons from the whole document, ranked by goal-token overlap with label and href path, then main content over site chrome, then document order. Choosing an offscreen element scrolls it to the center of the viewport, re-runs the hit-test, and clicks; the step is noted `scrolled into view`. This is still one Gateway call per step.
 
-A **progress gate** replaces the old "one soft miss ends the run". Progress means the URL changed, or a non-scroll action changed the visible content. Consecutive no-progress steps are counted in `progress.no_progress_steps` (Jev sees it and gets an extra rule once it is above zero). A low-confidence pick is executed and flagged, not treated as failure. When Jev says BLOCKED, the loop treats it as "the right control was not in this snapshot" and works through what the page still offers, once each per no-progress run: the best untried goal-ranked offscreen link, then the next, then SCROLL_DOWN, then SCROLL_UP. BACK destroys progress, so the loop only takes it on its own when the page is a dead end (no offscreen candidates and no main-content controls); Jev may still choose BACK explicitly. A `goBack` that hangs is recorded as a failed step and the run continues. The run returns `blocked` only when `CRACK_BOT_NO_PROGRESS_LIMIT` (3) consecutive steps changed nothing, or every recovery has been tried. The result carries `visited` URLs and `stats` (gateway ms, recoveries, low-confidence picks, failed targets, offscreen clicks) so a failure can be explained from the result alone.
+## System 1 / System 2
+
+Jev is System 1. It decides alone whenever its answer is clear: the top pick's probability leads the runner-up by at least `CRACK_BOT_ASK_MARGIN` (0.2). Measured on Wikipedia: a present goal link scores ~0.98 vs 0.01 and is clicked unasked; a page where the goal is several hops away gets BLOCKED at 0.75–0.85 with no target ranking, because Jev correctly refuses to plan a route in one glance.
+
+The loop never guesses on Jev's behalf. When Jev says BLOCKED it scrolls down once (free, reversible, the goal may be just below), asks Jev again, and if still BLOCKED returns `need_decision` to the Bot. It also asks when Jev is torn (margin under `ASK_MARGIN` between operations or between targets) and before clicking a control matching `IRREVERSIBLE` (Publish, Pay, Delete, Send…). The Bot answers with `fast_web_choose({ choice, goal? })`; its pick executes unasked and resets the progress gate.
+
+For a BLOCKED ask, the loop makes one extra cheap Gateway call (`STEPPING_STONE`, ~300ms) asking Jev to rank the page's main-content links as routes toward the goal; that ordering is what the Bot sees as `options[].probability`. Jev's stepping-stone pick is a hint, not a decision: on pages with nothing goal-shaped it favours "start over" links, so site chrome is excluded from the options and the Bot chooses.
+
+A **progress gate** still guards against spinning: progress means the URL changed, or a non-scroll action changed the visible content; `CRACK_BOT_NO_PROGRESS_LIMIT` (3) consecutive no-progress steps also trigger a `need_decision`. A `goBack` that hangs is recorded as a failed step and the run continues. The result carries `visited` URLs and `stats` (gateway ms, asks, low-confidence picks, failed targets, offscreen clicks) so a run can be explained from the result alone.
 
 After BLOCKED or budget, and after DONE when attached to the Bot's Chrome, the tab stays open (`open: true`). Continue with `fast_web_task({ reuseBrowser: true, goal })` or close with `fast_web_abort`. If `attached` is true, this is the Bot's Chrome: cookies are shared, the tab is brought to front before each click, and screenshot computer use should continue on the same URL.
 

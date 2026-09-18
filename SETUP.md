@@ -50,7 +50,7 @@ When attached, `fast_web_abort` closes only the crack-bot tab and never quits Ch
 
 Controls hidden under a modal or cookie wall are never offered to Jev. Controls inside a dialog or a large fixed banner are tagged, and their Close / Dismiss / No thanks / I already donated buttons are marked as dismiss controls. If Jev chooses `TYPE_TEXT` on a field outside an open banner, the loop clicks the banner's dismiss control first and decides again, so the Bot is never asked for `need_text` on a field that is about to be covered. A covered or vanished target counts as a step and is recorded as failed, so the loop cannot spin.
 
-For multi-step goals, each step also offers up to `CRACK_BOT_PLAN_TOP_K` (32) offscreen links ranked against the goal; picking one scrolls to it and clicks. A run becomes `blocked` only after `CRACK_BOT_NO_PROGRESS_LIMIT` (3) consecutive steps change nothing, after the loop has tried the next goal-ranked links and scrolling on its own (BACK only on a page with nothing goal-shaped on it). The result's `visited` and `stats` explain what happened.
+For multi-step goals, each step also offers up to `CRACK_BOT_PLAN_TOP_K` (32) offscreen links ranked against the goal; picking one scrolls to it and clicks. Jev acts alone when its pick is clear (leads the runner-up by `CRACK_BOT_ASK_MARGIN`, 0.2). When it says BLOCKED, is torn, or is about to click something irreversible, the run pauses with `status: "need_decision"` and the Bot chooses with `fast_web_choose`. The result's `visited` and `stats` explain what happened.
 
 Every call returns within `CRACK_BOT_MAX_RUN_MS` (default 45000, below the usual 60s MCP client timeout) with `status: "budget"` and the tab open. Continue with `reuseBrowser: true`. Per-call `maxMs` can lower it.
 
