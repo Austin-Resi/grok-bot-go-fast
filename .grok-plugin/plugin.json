@@ -12,7 +12,7 @@
   "mcpServers": "./mcp.json",
   "interface": {
     "displayName": "crack-bot",
-    "shortDescription": "Fast live-DOM web tasks instead of slow screenshot computer use.",
+    "shortDescription": "Fast web tasks on any page with HTML controls: forms, search, navigation, settings. Screenshot computer use stays for pixel work, CAPTCHAs, and uploads.",
     "longDescription": "crack-bot is the Bot's fast hands for the web. Give fast_web_task the whole goal plus everything you already know in data; it reads the live page, decides each step in ~0.5s with TypeSafe Jev, and clicks or types on the real DOM node. Fills forms from data with no round trips, routes multi-hop browsing itself, and asks you (need_text / need_decision) only when a decision needs a planner. Attaches to this agent's Chrome when remote debugging is enabled. Requires AI_GATEWAY_API_KEY.",
     "developerName": "Austin Lucas",
     "category": "Productivity",

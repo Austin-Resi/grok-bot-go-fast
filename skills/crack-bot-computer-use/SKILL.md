@@ -1,11 +1,33 @@
 ---
 name: crack-bot-computer-use
-description: Your fast hands for the web. For any task on a website or web app (forms, listings, search, browsing, settings, multi-page flows) call fast_web_task with the whole goal and everything you already know, then answer its short questions. It reads the live page, decides in ~0.5s per step with TypeSafe Jev, and clicks or types on the real DOM node. Use this instead of screenshot computer use on any page with normal HTML controls.
+description: Your fast hands for the web. Use fast_web_task for any task whose steps are clicking, typing, or selecting normal HTML controls (links, buttons, fields, dropdowns, checkboxes) on a website or web app: forms and listings, search, navigating to a page, changing settings, multi-page flows, checkout up to the final confirm. Give it the whole goal and everything you already know, then answer its short questions. It decides each step in ~0.5s with TypeSafe Jev and acts on the real DOM node. Do not use it for pixel work (canvas editors, maps, games, video, drag-and-drop, image cropping), CAPTCHAs, passkeys or 2FA, file uploads, or content inside embedded iframes (payment widgets); use screenshot computer use there. Prefer a connector when one exists for the service.
 ---
 
 # crack-bot: you think, it acts
 
 Two minds share the work. **Jev** (inside crack-bot) is System 1: it looks at a page and picks the next click in half a second, and it is very good at that. **You** are System 2: you know what the user wants, you have the facts, and you can plan a route. crack-bot runs Jev in a loop and only stops to ask you when a decision needs a planner. Play your part well and a 20-field form fills in seconds, a 5-hop browse finishes in one call, and you are asked once or twice, not once per click.
+
+## When to use it
+
+Ask one question: **is the next thing I need to do a click, a keystroke, or a selection on a normal HTML control?** If yes, this is the tool, and it will be faster and more reliable than a screenshot. If the thing I need is a pixel, a gesture, or a human-only check, it is not.
+
+| Use crack-bot | Use screenshot computer use | Use a connector |
+|---|---|---|
+| Fill a form, create a listing, update a profile | Canvas / WebGL editors, drawing, image cropping | The service has a Grok Bot plugin (Gmail, Calendar, Slack…) |
+| Search a site and open a result | Maps, charts, anything you position by eye | |
+| Navigate to a page, follow links, find a setting | Drag-and-drop, sliders you drag, video scrubbing | |
+| Checkout, sign-up, settings flows, up to the irreversible click (it asks before Publish / Pay / Delete) | CAPTCHA, passkey, 2FA, "are you human" (take over, then resume crack-bot with `reuseBrowser`) | |
+| Toggle checkboxes, pick dropdown values, tabs, accordions | File upload dialogs (not supported yet) | |
+| Dismissing cookie walls and modals (it does this itself) | Content inside a cross-origin iframe: embedded payment widgets, chat widgets, some ad-heavy pages | |
+| Read a page's visible text after navigating (`text` in the result) | Native OS dialogs, print dialogs, browser chrome | |
+
+Rules of thumb:
+
+- **Start with crack-bot on any web page.** If it returns `blocked`, the tab is still open at `url`; continue there with screenshot computer use rather than starting over. When the human-only step is done, hand back with `fast_web_task({ reuseBrowser: true, goal })`.
+- **Login walls:** if you are already signed in on this Chrome (`attached: true`), just go. If a password, passkey, or code is needed, that is a takeover step for you or the user; crack-bot never types passwords.
+- **Mostly-HTML pages with one pixel step** (a map pin, a signature pad): do the HTML parts with crack-bot, the pixel step with screenshot, then resume.
+- **Reading, not acting:** crack-bot returns the visible text of the page it lands on (`text`, 2000 chars). For long reads or downloads, a fetch or browser-read tool is cheaper than either.
+- **Speed expectation:** ~0.5s per step, ~2s per simple task, 5–10s for a multi-hop browse or a full form. If a run takes many `budget` continuations with little progress, the page is probably not HTML-controllable; switch.
 
 ## Four habits
 
