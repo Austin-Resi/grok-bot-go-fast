@@ -254,4 +254,43 @@ describe("FastBrowser", () => {
       await browser.close();
     }
   });
+
+  it("captures console errors and non-image HTTP failures", { timeout: 30_000 }, async () => {
+    process.env.CRACK_BOT_HEADLESS = "true";
+    process.env.CRACK_BOT_CDP_DISCOVER = "false";
+    delete process.env.CDP_URL;
+    const server = createServer((req, res) => {
+      if (req.url === "/gone") {
+        res.statusCode = 404;
+        return void res.end("no");
+      }
+      res.setHeader("content-type", "text/html");
+      res.end(`<!doctype html>
+        <script src="/gone"></script>
+        <script>console.error("upload failed: 403");</script>
+        <button>Go</button>`);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const browser = new FastBrowser();
+    try {
+      await browser.open(`http://127.0.0.1:${address.port}/`);
+      await browser.observe();
+      const { events } = browser.takeEvents();
+      assert.ok(
+        events.some((e) => e.type === "console_error" && /upload failed/.test(e.text)),
+        `expected a console_error, got ${JSON.stringify(events)}`,
+      );
+      assert.ok(
+        events.some((e) => e.type === "http_error" && e.text.startsWith("404")),
+        `expected a 404 http_error, got ${JSON.stringify(events)}`,
+      );
+      const again = browser.takeEvents();
+      assert.equal(again.events.length, 0, "takeEvents drains the buffer");
+    } finally {
+      await browser.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });

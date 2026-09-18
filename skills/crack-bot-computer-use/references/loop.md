@@ -3,7 +3,7 @@
 `fast_web_task` is the executor. Grok Bot does not click.
 
 1. `snapshot.js` numbers visible controls and stores `window.__jevFast.nodes`
-2. One Gateway evaluate call: operation + speculative targets
+2. One Gateway evaluate call: operation + speculative targets + independent `goal_done` / `stuck` booleans
 3. Click the stored node (hit-test just before input)
 4. Short wait (autocomplete ≤200ms, otherwise ~50ms)
 5. Repeat until DONE, TYPE_TEXT (`need_text`), or a decision Jev cannot make (`need_decision`)
@@ -26,7 +26,9 @@ When Jev says BLOCKED on the action question, the loop asks it the routing quest
 
 When a BLOCKED does reach the Bot, the options carry Jev's stepping-stone ranking as `options[].probability`. Site chrome is excluded from the options and from the "torn" tie check: a near-tie between a content link and the site logo is Jev saying "this or start over", and the content link wins.
 
-A **progress gate** still guards against spinning: progress means the URL changed, or a non-scroll action changed the visible content; `CRACK_BOT_NO_PROGRESS_LIMIT` (3) consecutive no-progress steps also trigger a `need_decision`. A `goBack` that hangs is recorded as a failed step and the run continues. The result carries `visited` URLs and `stats` (gateway ms, asks, low-confidence picks, failed targets, offscreen clicks) so a run can be explained from the result alone.
+A **progress gate** still guards against spinning: progress means the URL changed, or a non-scroll action changed the visible content; `CRACK_BOT_NO_PROGRESS_LIMIT` (3) consecutive no-progress steps also trigger a `need_decision`. If the last executed action changed nothing and Jev picks it again, the loop takes the runner-up target (or SCROLL / BACK) from that same distribution instead of retrying. A `goBack` that hangs is recorded as a failed step and the run continues.
+
+Each evaluate call also asks two independent watchers: `goal_done` (P ≥ 0.85 ends the run as `done`, even if the action pick wanted to continue) and `stuck` (P ≥ 0.85 after step 2 is treated like BLOCKED). They cannot see the action pick, so they check it rather than rationalise it. The result carries `watchers`, `pageErrors` (console / page / network failures, tagged by step), `visited` URLs and `stats` so a run can be explained from the result alone.
 
 After BLOCKED or budget, and after DONE when attached to the Bot's Chrome, the tab stays open (`open: true`). Continue with `fast_web_task({ reuseBrowser: true, goal })` or close with `fast_web_abort`. If `attached` is true, this is the Bot's Chrome: cookies are shared, the tab is brought to front before each click, and screenshot computer use should continue on the same URL.
 

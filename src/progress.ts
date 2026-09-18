@@ -73,3 +73,42 @@ export function margin(probabilities: Record<string, number>): number | undefine
   if (sorted.length < 2) return undefined;
   return sorted[0] - sorted[1];
 }
+
+/** Operations that do not need a target head; safe to recover onto from a repeated no-op. */
+const TARGETLESS = new Set(["SCROLL_DOWN", "SCROLL_UP", "BACK", "WAIT"]);
+
+export interface RunnerUp {
+  operation: string;
+  target: string | null;
+  probability: number;
+}
+
+/**
+ * The last executed action changed nothing and Jev just picked it again.
+ * Take its runner-up from this distribution instead of retrying: next-best
+ * target first, then a target-less operation (SCROLL / BACK / WAIT).
+ */
+export function pickRunnerUp(input: {
+  lastNoop: string | undefined;
+  operation: string;
+  target: string | null;
+  targetProbabilities: Record<string, number>;
+  operationProbabilities?: Record<string, number>;
+  minP?: number;
+}): RunnerUp | undefined {
+  const minP = input.minP ?? 0.05;
+  if (!input.lastNoop || input.lastNoop !== `${input.operation}:${input.target ?? ""}`) return;
+  if (input.operation === "BLOCKED" || input.operation === "DONE") return;
+
+  const nextTarget = Object.entries(input.targetProbabilities)
+    .filter(([index]) => index !== (input.target ?? ""))
+    .sort((a, b) => b[1] - a[1])[0];
+  if (nextTarget && nextTarget[1] >= minP) {
+    return { operation: input.operation, target: nextTarget[0], probability: nextTarget[1] };
+  }
+
+  const nextOp = Object.entries(input.operationProbabilities ?? {})
+    .filter(([op]) => op !== input.operation && TARGETLESS.has(op))
+    .sort((a, b) => b[1] - a[1])[0];
+  if (nextOp && nextOp[1] >= minP) return { operation: nextOp[0], target: null, probability: nextOp[1] };
+}

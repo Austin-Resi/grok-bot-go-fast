@@ -102,7 +102,7 @@ fast_web_task({ reuseBrowser: true, goal })
 
 ## When it finishes
 
-`done` means Jev saw visible evidence the goal was met (a confirmation, the target page). Verify against the result's `url`, `title`, and `text` if the outcome matters. `blocked` means it gave up after several steps that changed nothing; the tab is open at `url`, so continue there with screenshot computer use rather than starting over. `steps[]` shows every action with a note (`from data.price`, `attached 2 file(s) from files.photos`, `route: "United States" is closer to the goal`, `dismissed overlay…`), and `stats` counts data fills, uploads, route hops, and asks. Set `CRACK_BOT_TRACE=1` on the server to see each step on stderr as it happens.
+`done` means Jev saw visible evidence the goal was met (a confirmation, the target page), or its independent `goal_done` watcher fired at ≥0.85. The result's `watchers` reports both `goalDone` and `stuck` probabilities from that last look; if they disagree with the action pick (DONE but watcher unsure, or watcher said done while Jev still wanted to click), the reason says so — verify against `url`, `title`, and `text`. `blocked` means it gave up after several steps that changed nothing, or the `stuck` watcher fired after step 2; the tab is open at `url`, so continue there with screenshot computer use rather than starting over. `steps[]` shows every action with a note (`from data.price`, `attached 2 file(s) from files.photos`, `route: "United States" is closer to the goal`, `taking the runner-up target [40]`, `dismissed overlay…`), `pageErrors` lists console/page/network failures seen during the run, and `stats` counts data fills, uploads, route hops, and asks. Set `CRACK_BOT_TRACE=1` on the server to see each step on stderr as it happens.
 
 ## Sessions
 
@@ -110,7 +110,7 @@ The tab stays open (`open: true`) after `need_text`, `need_decision`, `blocked`,
 
 ## What it handles so you don't have to
 
-Cookie walls, donate banners and modals are dismissed before typing; controls hidden under them are never offered. Wrapped links are hit-tested per line box. Offscreen links and fields are scrolled to when chosen. Each step is one ~0.5s Jev call; a stalled page is a failed step, not a crashed run.
+Cookie walls, donate banners and modals are dismissed before typing; controls hidden under them are never offered. Wrapped links are hit-tested per line box. Offscreen links and fields are scrolled to when chosen. Each step is one ~0.5s Jev call that also independently asks "is the goal done?" and "are we stuck?" so a confident click cannot talk a finish into existence. Repeating an action that changed nothing takes Jev's runner-up instead of retrying. A stalled page is a failed step, not a crashed run.
 
 ## Do not
 

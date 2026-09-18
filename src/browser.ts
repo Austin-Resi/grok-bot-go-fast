@@ -24,6 +24,12 @@ interface ClickTarget {
   scrolled?: number;
 }
 
+export interface PageEvent {
+  type: "console_error" | "page_error" | "request_failed" | "http_error";
+  text: string;
+  page: string;
+}
+
 export interface ObserveOptions {
   /** Ranks offscreen candidates against this text. */
   goal?: string;
@@ -90,6 +96,23 @@ export class FastBrowser {
       this.page = await context.newPage();
     }
 
+    // Page-side failures explain runs that look fine from the DOM: a 403 on an
+    // upload, a JS error on submit. Kept small; read with takeEvents().
+    const where = () => this.page?.url().slice(0, 120) ?? "";
+    this.page.on("console", (msg) => {
+      if (msg.type() === "error") this.pushEvent({ type: "console_error", text: msg.text().slice(0, 300), page: where() });
+    });
+    this.page.on("pageerror", (err) => this.pushEvent({ type: "page_error", text: String(err).slice(0, 300), page: where() }));
+    this.page.on("requestfailed", (req) => {
+      this.pushEvent({ type: "request_failed", text: `${req.method()} ${req.url().slice(0, 200)} ${req.failure()?.errorText ?? ""}`.trim().slice(0, 300), page: where() });
+    });
+    this.page.on("response", (res) => {
+      const status = res.status();
+      if (status >= 400 && res.request().resourceType() !== "image") {
+        this.pushEvent({ type: "http_error", text: `${status} ${res.request().method()} ${res.url().slice(0, 200)}`, page: where() });
+      }
+    });
+
     // Clicking a styled "Upload" button opens a native file chooser, which no
     // model can drive. Intercept it: attach whatever the run provides, or let it
     // pass with nothing so the page simply sees no selection.
@@ -101,6 +124,25 @@ export class FastBrowser {
 
     this.session = await this.page.context().newCDPSession(this.page);
     await this.goto(url);
+  }
+
+  private events: PageEvent[] = [];
+  private eventsDropped = 0;
+
+  private pushEvent(event: PageEvent): void {
+    if (this.events.length >= 50) {
+      this.eventsDropped += 1;
+      return;
+    }
+    this.events.push(event);
+  }
+
+  /** Drain page-side errors collected since the last call. */
+  takeEvents(): { events: PageEvent[]; dropped: number } {
+    const out = { events: this.events, dropped: this.eventsDropped };
+    this.events = [];
+    this.eventsDropped = 0;
+    return out;
   }
 
   /** Supplies file paths when the page opens a chooser; return [] to attach nothing. */

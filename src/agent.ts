@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { actionSpace, type ActionSpace, type ObservedPage, type SnapshotAction } from "./action-space.ts";
-import { FastBrowser, StalePage } from "./browser.ts";
+import { FastBrowser, StalePage, type PageEvent } from "./browser.ts";
 import { buildUiActionQuestions } from "./choose-ui-action.ts";
 import type { Progress, RecentAction } from "./choose-ui-action.ts";
 import { setting, settingIs } from "./env.ts";
@@ -9,10 +9,11 @@ import { evaluateWithGateway } from "./evaluate.ts";
 import { dataToText, matchField, type TaskData } from "./field-match.ts";
 import { fieldText } from "./fill-text.ts";
 import { resolveUiDecision } from "./format.ts";
-import { madeProgress, shouldAsk, type AskReason } from "./progress.ts";
+import { madeProgress, pickRunnerUp, shouldAsk, type AskReason } from "./progress.ts";
 import {
   ASK_MARGIN,
   ASK_OPTIONS,
+  GOAL_DONE_FLOOR,
   IRREVERSIBLE,
   LOW_CONFIDENCE,
   MAX_RUN_MS,
@@ -24,6 +25,7 @@ import {
   ROUTE_FLOOR,
   ROUTE_HOPS,
   STEPPING_STONE,
+  STUCK_FLOOR,
 } from "./questions.ts";
 
 export type FillMode = "bot" | "helper";
@@ -122,6 +124,10 @@ export interface FastWebTaskResult {
   display?: string;
   visited?: string[];
   stats?: RunStats;
+  /** Jev's independent judgments on the final page: P(goal achieved), P(stuck). */
+  watchers?: { goalDone: number | null; stuck: number | null };
+  /** Console, page and network errors seen during the run, by step. */
+  pageErrors?: Array<PageEvent & { step: number }>;
 }
 
 interface PendingFill {
@@ -172,6 +178,12 @@ interface Run {
   routeHops: number;
   /** Jev's once-per-run answer: is this goal about reaching another page? */
   navigationGoal: boolean | undefined;
+  /** "operation:target" of the last executed action that changed nothing. */
+  lastNoop: string | undefined;
+  /** Watcher probabilities from the last Jev call, reported in results. */
+  lastWatchers: { goalDone: number | null; stuck: number | null } | undefined;
+  /** Console/page/network errors seen during the run, tagged by step. */
+  events: Array<PageEvent & { step: number }>;
   /** Whether the settle-and-recheck after a BLOCKED has been used since the last progress. */
   settledForBlocked: boolean;
   data: TaskData;
@@ -251,6 +263,9 @@ function resetProgress(
   run.settledForBlocked = false;
   run.routeHops = 0;
   run.navigationGoal = undefined;
+  run.lastNoop = undefined;
+  run.lastWatchers = undefined;
+  run.events = [];
   run.stats = freshStats();
 }
 
@@ -326,6 +341,9 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
       routeHopLimit,
       routeHops: 0,
       navigationGoal: undefined,
+      lastNoop: undefined,
+      lastWatchers: undefined,
+      events: [],
       settledForBlocked: false,
       data,
       dataUsed: new Set(),
@@ -546,10 +564,18 @@ async function perform(run: Run, action: SnapshotAction, text?: string, note?: s
     run.streak = 0;
     run.scrolledForBlocked = false;
     run.settledForBlocked = false;
+    run.lastNoop = undefined;
   } else {
     run.streak += 1;
   }
   if (ok && action.offscreen) run.stats.offscreenClicks += 1;
+
+  // Page-side errors during this step go into history so Jev sees them too
+  // (a failed upload request explains a form that will not submit).
+  const { events } = run.browser.takeEvents();
+  const relevant = events.filter((e) => e.type !== "console_error").slice(0, 3);
+  run.events.push(...events.map((e) => ({ ...e, step: run.step })));
+  if (relevant.length) note = [note, `page errors: ${relevant.map((e) => e.text.slice(0, 80)).join(" | ")}`].filter(Boolean).join("; ");
 
   run.history.push({
     action: action.label,
@@ -651,6 +677,7 @@ async function performUpload(run: Run, action: SnapshotAction): Promise<{ outcom
     run.streak = 0;
     run.scrolledForBlocked = false;
     run.settledForBlocked = false;
+    run.lastNoop = undefined;
   } else {
     run.streak += 1;
   }
@@ -868,7 +895,7 @@ async function advanceActive(): Promise<FastWebTaskResult> {
       const latencyMs = Math.round(performance.now() - started);
       run.stats.gatewayMs += latencyMs;
       const decision = resolveUiDecision(decided.answers, decided.confidence);
-      const execute =
+      let execute =
         decision.operation === "DONE" || decision.operation === "BLOCKED"
           ? decision.operation
           : decision.target
@@ -876,20 +903,30 @@ async function advanceActive(): Promise<FastWebTaskResult> {
             : decision.operation;
       const lowConfidence = decision.confidence != null && decision.confidence < LOW_CONFIDENCE;
       if (lowConfidence) run.stats.lowConfidence += 1;
-      trace(run, `jev ${execute} conf=${decision.confidence ?? "-"} (${latencyMs}ms) on ${run.page.url}`);
+      run.lastWatchers = { goalDone: decision.goalDone, stuck: decision.stuck };
+      trace(run, `jev ${execute} conf=${decision.confidence ?? "-"} goal=${fmt(decision.goalDone)} stuck=${fmt(decision.stuck)} (${latencyMs}ms) on ${run.page.url}`);
 
-      if (decision.operation === "DONE") {
-        record(run, decision.operation, decision.target, execute, decision.confidence, latencyMs);
-        return await stop("done", run);
+      // Watchers run before the action: they judge this page, so the action must
+      // not override them. Agreement between the action pick and the watcher is
+      // what a trustworthy finish looks like; the trace shows both.
+      if (decision.operation === "DONE" || (decision.goalDone ?? 0) >= GOAL_DONE_FLOOR) {
+        const agree = decision.operation === "DONE" && (decision.goalDone ?? 0) >= GOAL_DONE_FLOOR;
+        record(run, "DONE", decision.target, "DONE", decision.confidence, latencyMs, undefined,
+          agree ? `goal_done ${fmt(decision.goalDone)}` : decision.operation === "DONE" ? `Jev chose DONE; goal_done only ${fmt(decision.goalDone)}` : `goal watcher fired (${fmt(decision.goalDone)}); Jev had picked ${execute}`);
+        return await stop("done", run, agree ? undefined : `Finish is one-sided: ${decision.operation === "DONE" ? "action said DONE, watcher unsure" : "watcher said done, action wanted to continue"}. Verify against url/text.`);
       }
 
-      const askReason = shouldAsk({
-        operation: decision.operation,
-        operationProbabilities: decision.operationProbabilities,
-        targetProbabilities: decision.targetProbabilities,
-        minMargin: run.askMargin,
-        chromeTargets: new Set(space.input.elements.filter((e) => !e.main && !e.overlay).map((e) => e.index)),
-      });
+      const stuckWatcher = run.step > 2 && (decision.stuck ?? 0) >= STUCK_FLOOR;
+      const askReason = stuckWatcher
+        ? "blocked"
+        : shouldAsk({
+            operation: decision.operation,
+            operationProbabilities: decision.operationProbabilities,
+            targetProbabilities: decision.targetProbabilities,
+            minMargin: run.askMargin,
+            chromeTargets: new Set(space.input.elements.filter((e) => !e.main && !e.overlay).map((e) => e.index)),
+          });
+      if (stuckWatcher) trace(run, `stuck watcher fired (${fmt(decision.stuck)}); treating as BLOCKED`);
 
       if (askReason === "blocked") {
         // A BLOCKED on a page that is still painting is not a decision. Re-settle
@@ -938,7 +975,7 @@ async function advanceActive(): Promise<FastWebTaskResult> {
         return ask(run, space, "blocked", { ...decision, targetProbabilities: ranked.probabilities }, latencyMs, why);
       }
 
-      const action = space.resolve(decision.operation, decision.target);
+      let action = space.resolve(decision.operation, decision.target);
       if (!action) {
         // Jev named something the executor cannot map. Count it against the gate
         // and let Jev see the failure instead of ending the run.
@@ -969,6 +1006,32 @@ async function advanceActive(): Promise<FastWebTaskResult> {
 
       if (await dismissBeforeTyping(run, space, action, decision.confidence, latencyMs)) continue;
 
+      // Repeat-no-op recovery: Jev just picked the action that changed nothing
+      // last step. Take the runner-up from this distribution instead of retrying.
+      let recovered: string | undefined;
+      const alternate = pickRunnerUp({
+        lastNoop: run.lastNoop,
+        operation: decision.operation,
+        target: decision.target,
+        targetProbabilities: decision.targetProbabilities,
+        operationProbabilities: decision.operationProbabilities,
+      });
+      if (alternate) {
+        const swapped = space.resolve(alternate.operation, alternate.target);
+        if (swapped) {
+          recovered = `"${execute}" changed nothing last step; taking the runner-up ${alternate.target ? `target [${alternate.target}]` : alternate.operation} (p=${alternate.probability.toFixed(2)})`;
+          decision.operation = alternate.operation;
+          decision.target = alternate.target;
+          execute = alternate.target ? `${alternate.operation} [${alternate.target}]` : alternate.operation;
+          action = swapped;
+          trace(run, recovered);
+          if (action.kind === "click" && IRREVERSIBLE.test(action.label.trim())) {
+            record(run, decision.operation, decision.target, execute, decision.confidence, latencyMs, undefined, "asked the Bot (irreversible)");
+            return ask(run, space, "irreversible", decision, latencyMs, `"${action.label}" is hard to undo; confirm before clicking`);
+          }
+        }
+      }
+
       const confidenceNote = lowConfidence ? `low confidence ${decision.confidence?.toFixed(2)}` : undefined;
 
       if (action.kind === "fill") {
@@ -992,16 +1055,18 @@ async function advanceActive(): Promise<FastWebTaskResult> {
         continue;
       }
 
-      const outcome = await perform(run, action, undefined, confidenceNote);
+      const outcome = await perform(run, action, undefined, [confidenceNote, recovered].filter(Boolean).join("; ") || undefined);
+      // Remember a no-op so the same pick next step takes the runner-up instead.
+      run.lastNoop = outcome.ok && !outcome.progressed && action.kind !== "scroll" ? `${decision.operation}:${decision.target ?? ""}` : undefined;
       record(
         run,
         decision.operation,
         decision.target,
-        execute,
+        decision.target ? `${decision.operation} [${decision.target}]` : decision.operation,
         decision.confidence,
         latencyMs,
         outcome,
-        [outcome.ok ? undefined : "target was covered; not clicked", action.offscreen ? "scrolled into view" : undefined, confidenceNote]
+        [outcome.ok ? undefined : "target was covered; not clicked", action.offscreen ? "scrolled into view" : undefined, confidenceNote, recovered]
           .filter(Boolean)
           .join("; ") || undefined,
       );
@@ -1075,6 +1140,7 @@ function record(
 }
 
 function snapshot(run: Run): Omit<FastWebTaskResult, "status"> {
+  drainEvents(run);
   return {
     url: run.page.url,
     title: run.page.title,
@@ -1087,7 +1153,18 @@ function snapshot(run: Run): Omit<FastWebTaskResult, "status"> {
     display: process.env.DISPLAY || undefined,
     visited: run.visited,
     stats: run.stats,
+    watchers: run.lastWatchers,
+    pageErrors: run.events.length ? run.events.slice(-20) : undefined,
   };
+}
+
+function drainEvents(run: Run): void {
+  const { events } = run.browser.takeEvents();
+  run.events.push(...events.map((e) => ({ ...e, step: run.step })));
+}
+
+function fmt(p: number | null | undefined): string {
+  return p == null ? "-" : p.toFixed(2);
 }
 
 function needText(run: Run): FastWebTaskResult {

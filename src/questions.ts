@@ -36,6 +36,26 @@ buttons, CLICK or SELECT the option whose text matches the provided value (e.g. 
 means click the "I did" option). A file_input with files_attached 0 that matches a provided file
 group takes UPLOAD. Fill those first, then submit. Do not choose BLOCKED while such a field is empty.`;
 
+/**
+ * Two independent watchers asked alongside the action choice, in the same
+ * call. They cannot see the action pick, so they check it rather than
+ * rationalise it: an honest "is it done?" and "are we stuck?" per step.
+ */
+export const GOAL_DONE = `The goal has been achieved: the current page, its visible text, field values and recent actions show
+every requirement of the goal satisfied (the sought page is open, the confirmation is shown, the form is
+saved). A matching link or a partially filled form is not achievement.`;
+
+export const STUCK = `The run is not making progress toward the goal from here: recent actions repeat or change nothing,
+the needed control is absent and nothing offered (including offscreen elements, SCROLL, BACK) would
+reveal it, or the page is a dead end. A page that is still loading, or a form with empty fields that
+match provided values, is not stuck.`;
+
+/** goal_done at or above this ends the run as done, independent of the action pick. */
+export const GOAL_DONE_FLOOR = 0.85;
+
+/** stuck at or above this (after the first two steps) is treated like a BLOCKED pick. */
+export const STUCK_FLOOR = 0.85;
+
 export const TARGET = `Choose the best observed target if the next operation is the one specified in this question.
 Use the user's entire goal, field values, nearby text, and recent actions. This question chooses only
 a target for that operation; another question decides which operation to execute. Do not choose

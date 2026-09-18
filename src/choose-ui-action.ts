@@ -1,4 +1,4 @@
-import { MAX_CHOICE_OPTIONS, NEXT_ACTION, NO_PROGRESS, OVERLAY_OPEN, PROVIDED_VALUES, TARGET } from "./questions.ts";
+import { GOAL_DONE, MAX_CHOICE_OPTIONS, NEXT_ACTION, NO_PROGRESS, OVERLAY_OPEN, PROVIDED_VALUES, STUCK, TARGET } from "./questions.ts";
 
 export interface UiElement {
   index: string;
@@ -77,6 +77,11 @@ export interface ChoiceQuestion {
   criteria: Record<string, unknown>;
 }
 
+export interface BooleanQuestion {
+  type: "boolean";
+  instructions: unknown;
+}
+
 export interface UiActionQuestions {
   state: {
     page: PageState;
@@ -87,7 +92,7 @@ export interface UiActionQuestions {
     provided_values?: Record<string, string>;
     provided_files?: string[];
   };
-  questions: Record<string, ChoiceQuestion>;
+  questions: Record<string, ChoiceQuestion | BooleanQuestion>;
   truncated: boolean;
 }
 
@@ -169,12 +174,14 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
   if (stuck) rules.push(NO_PROGRESS);
   if (Object.keys(input.providedValues ?? {}).length || input.providedFiles?.length) rules.push(PROVIDED_VALUES);
 
-  const questions: Record<string, ChoiceQuestion> = {
+  const questions: Record<string, ChoiceQuestion | BooleanQuestion> = {
     operation: {
       type: "choice",
       instructions: { goal: input.goal, rules },
       criteria: operationCap.criteria,
     },
+    goal_done: { type: "boolean", instructions: { goal: input.goal, rule: GOAL_DONE } },
+    stuck: { type: "boolean", instructions: { goal: input.goal, rule: STUCK } },
   };
 
   for (const [operation, candidates] of Object.entries(targets)) {

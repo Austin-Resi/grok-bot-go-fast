@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { madeProgress, margin, shouldAsk } from "./progress.ts";
+import { madeProgress, margin, pickRunnerUp, shouldAsk } from "./progress.ts";
 
 test("madeProgress: URL change always counts, content change only for page actions", () => {
   assert.equal(madeProgress("click", { urlChanged: true, textChanged: false }, true), true);
@@ -129,5 +129,43 @@ test("shouldAsk: target margin is ignored for operations without a target head",
   assert.equal(
     shouldAsk({ operation: "SCROLL_DOWN", operationProbabilities: { SCROLL_DOWN: 0.9 }, targetProbabilities: { a: 0.5, b: 0.5 }, minMargin: MIN }),
     undefined,
+  );
+});
+
+test("pickRunnerUp: same no-op click takes the next-best target", () => {
+  const alt = pickRunnerUp({
+    lastNoop: "CLICK:12",
+    operation: "CLICK",
+    target: "12",
+    targetProbabilities: { "12": 0.7, "40": 0.22, "3": 0.05 },
+  });
+  assert.deepEqual(alt, { operation: "CLICK", target: "40", probability: 0.22 });
+});
+
+test("pickRunnerUp: no other target falls through to SCROLL / BACK", () => {
+  const alt = pickRunnerUp({
+    lastNoop: "CLICK:12",
+    operation: "CLICK",
+    target: "12",
+    targetProbabilities: { "12": 0.9 },
+    operationProbabilities: { CLICK: 0.7, SCROLL_DOWN: 0.2, BLOCKED: 0.08 },
+  });
+  assert.deepEqual(alt, { operation: "SCROLL_DOWN", target: null, probability: 0.2 });
+});
+
+test("pickRunnerUp: a new pick, a DONE, or a tiny runner-up is left alone", () => {
+  assert.equal(
+    pickRunnerUp({ lastNoop: "CLICK:12", operation: "CLICK", target: "40", targetProbabilities: { "12": 0.5, "40": 0.4 } }),
+    undefined,
+    "this click is not the one that just failed",
+  );
+  assert.equal(
+    pickRunnerUp({ lastNoop: "DONE:", operation: "DONE", target: null, targetProbabilities: {} }),
+    undefined,
+  );
+  assert.equal(
+    pickRunnerUp({ lastNoop: "CLICK:12", operation: "CLICK", target: "12", targetProbabilities: { "12": 0.96, "40": 0.02 } }),
+    undefined,
+    "0.02 is noise, not an alternate",
   );
 });
