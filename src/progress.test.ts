@@ -54,6 +54,28 @@ test("shouldAsk: BLOCKED always asks (Packers page, link-only Mars goal)", () =>
   assert.equal(shouldAsk({ operation: "", operationProbabilities: {}, targetProbabilities: {}, minMargin: MIN }), "blocked");
 });
 
+test("shouldAsk: two constructive operations tied is not a dilemma (form: CLICK 0.49 vs UPLOAD 0.38)", () => {
+  assert.equal(
+    shouldAsk({
+      operation: "CLICK",
+      operationProbabilities: { CLICK: 0.49, UPLOAD: 0.38, TYPE_TEXT: 0.1 },
+      targetProbabilities: { "13": 0.9 },
+      minMargin: MIN,
+    }),
+    undefined,
+  );
+  assert.equal(
+    shouldAsk({
+      operation: "CLICK",
+      operationProbabilities: { CLICK: 0.5, DONE: 0.4 },
+      targetProbabilities: { "13": 0.9 },
+      minMargin: MIN,
+    }),
+    "torn_operation",
+    "a tie with DONE is a real question",
+  );
+});
+
 test("shouldAsk: torn between operations (United States page: BLOCKED 0.54 vs CLICK 0.37)", () => {
   assert.equal(
     shouldAsk({

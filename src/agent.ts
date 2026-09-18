@@ -6,7 +6,7 @@ import { buildUiActionQuestions } from "./choose-ui-action.ts";
 import type { Progress, RecentAction } from "./choose-ui-action.ts";
 import { setting, settingIs } from "./env.ts";
 import { evaluateWithGateway } from "./evaluate.ts";
-import { matchField, type TaskData } from "./field-match.ts";
+import { dataToText, matchField, type TaskData } from "./field-match.ts";
 import { fieldText } from "./fill-text.ts";
 import { resolveUiDecision } from "./format.ts";
 import { madeProgress, shouldAsk, type AskReason } from "./progress.ts";
@@ -17,6 +17,8 @@ import {
   LOW_CONFIDENCE,
   MAX_RUN_MS,
   MAX_STEPS,
+  NAVIGATION_GOAL,
+  NAVIGATION_GOAL_FLOOR,
   NO_PROGRESS_LIMIT,
   PLAN_TOP_K,
   ROUTE_FLOOR,
@@ -168,6 +170,10 @@ interface Run {
   routeHopLimit: number;
   /** Consecutive stepping-stone hops since the last Bot decision. */
   routeHops: number;
+  /** Jev's once-per-run answer: is this goal about reaching another page? */
+  navigationGoal: boolean | undefined;
+  /** Whether the settle-and-recheck after a BLOCKED has been used since the last progress. */
+  settledForBlocked: boolean;
   data: TaskData;
   dataUsed: Set<string>;
   files: Record<string, string[]>;
@@ -242,7 +248,9 @@ function resetProgress(
   run.visited = [run.page.url];
   run.streak = 0;
   run.scrolledForBlocked = false;
+  run.settledForBlocked = false;
   run.routeHops = 0;
+  run.navigationGoal = undefined;
   run.stats = freshStats();
 }
 
@@ -273,7 +281,7 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
       run.askMargin = askMargin;
       run.routeFloor = routeFloor;
       run.routeHopLimit = routeHopLimit;
-      run.page = await run.browser.observe({ goal: input.goal, topK });
+      run.page = await observeStable(run.browser, input.goal, topK);
       resetProgress(run, input.goal, maxSteps, maxMs, fillMode, data, files);
       run.keepOpen = input.keepOpen ?? run.keepOpen;
       return await advanceActive();
@@ -290,7 +298,7 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
   const browser = new FastBrowser();
   try {
     await browser.open(url);
-    const page = await browser.observe({ goal: input.goal, topK });
+    const page = await observeStable(browser, input.goal, topK);
     const run: Run = {
       browser,
       goal: input.goal,
@@ -317,6 +325,8 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
       routeFloor,
       routeHopLimit,
       routeHops: 0,
+      navigationGoal: undefined,
+      settledForBlocked: false,
       data,
       dataUsed: new Set(),
       files,
@@ -405,6 +415,7 @@ export async function chooseFastWebTask(input: ChooseInput): Promise<FastWebTask
     // A Bot decision is a fresh start for the gate: the planner has weighed in.
     run.streak = 0;
     run.scrolledForBlocked = false;
+    run.settledForBlocked = false;
     run.routeHops = 0;
     return await advanceActive();
   } catch (error) {
@@ -423,6 +434,57 @@ interface Outcome {
   ok: boolean;
   progressed: boolean;
   pageChanged: boolean;
+}
+
+/**
+ * What Jev sees of the Bot's data: name → short preview, unused first. Short
+ * values let it pick the matching radio or dropdown option ("Who made it: I did");
+ * long ones (descriptions) are elided since only TYPE_TEXT needs them.
+ */
+function providedPreview(run: Run): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(run.data)) {
+    const text = dataToText(value);
+    const preview = text.length > 60 ? `${text.slice(0, 40)}… (${text.length} chars)` : text;
+    out[key] = run.dataUsed.has(key) ? `${preview} [already typed]` : preview;
+  }
+  return out;
+}
+
+/** Cheap identity for "has the page finished changing": URL, control count, text length, first labels. */
+function pageSignature(page: ObservedPage): string {
+  const labels = page.actions.filter((a) => a.node != null).slice(0, 40).map((a) => a.label).join("|");
+  return `${page.url}#${page.actions.length}#${page.text.length}#${labels}`;
+}
+
+/**
+ * Observe until two consecutive snapshots match. Server-rendered pages settle
+ * on the first check (~250ms); single-page apps that paint a form after
+ * domcontentloaded (Etsy's listing editor) need a second or two, and deciding
+ * on the empty shell produces a confident-looking BLOCKED.
+ */
+async function observeStable(browser: FastBrowser, goal: string, topK: number, maxMs = 4_000): Promise<ObservedPage> {
+  const deadline = performance.now() + maxMs;
+  await browser.settleNetwork(Math.min(maxMs, 3_000));
+  let page = await browser.observe({ goal, topK });
+  let signature = pageSignature(page);
+  while (performance.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 250));
+    const next = await browser.observe({ goal, topK });
+    const nextSignature = pageSignature(next);
+    page = next;
+    // Stable and populated: done. A stable shell with nothing to act on is still
+    // loading (a spinner, a skeleton), so keep polling until the deadline.
+    if (nextSignature === signature && looksPopulated(page)) break;
+    signature = nextSignature;
+  }
+  return page;
+}
+
+/** A page with fewer than three real controls is a shell, not a page. */
+function looksPopulated(page: ObservedPage): boolean {
+  const controls = page.actions.filter((a) => a.node != null && (a.main || a.kind === "fill" || a.kind === "select" || a.kind === "upload"));
+  return controls.length >= 3;
 }
 
 /** Field values, checks, selections and attached files, so filling a form counts as progress. */
@@ -451,6 +513,9 @@ async function perform(run: Run, action: SnapshotAction, text?: string, note?: s
   }
   try {
     run.page = await run.browser.observe({ goal: run.goal, topK: run.topK });
+    // A navigation landed on a new document, or Jev asked to wait: give a
+    // client-rendered app time to paint before deciding on it.
+    if (run.page.url !== before.url || action.kind === "wait") run.page = await observeStable(run.browser, run.goal, run.topK);
   } catch (error) {
     if (!(error instanceof StalePage)) throw error;
     // The page never settled (media, long-running navigation). Keep the last
@@ -480,6 +545,7 @@ async function perform(run: Run, action: SnapshotAction, text?: string, note?: s
   if (progressed) {
     run.streak = 0;
     run.scrolledForBlocked = false;
+    run.settledForBlocked = false;
   } else {
     run.streak += 1;
   }
@@ -584,6 +650,7 @@ async function performUpload(run: Run, action: SnapshotAction): Promise<{ outcom
   if (progressed) {
     run.streak = 0;
     run.scrolledForBlocked = false;
+    run.settledForBlocked = false;
   } else {
     run.streak += 1;
   }
@@ -677,6 +744,30 @@ interface SteppingStone {
 }
 
 /**
+ * May the loop navigate away from the current page on its own? Never when the
+ * Bot brought data or files (that is a form task). Otherwise ask Jev once per
+ * run whether the goal is about reaching a different page.
+ */
+async function routingAllowed(run: Run): Promise<boolean> {
+  if (Object.keys(run.data).length || Object.keys(run.files).length) return false;
+  if (run.navigationGoal != null) return run.navigationGoal;
+  try {
+    const started = performance.now();
+    const result = await evaluateWithGateway({
+      state: { goal: run.goal, current_page: { url: run.page.url, title: run.page.title } },
+      questions: { navigate: { type: "boolean", instructions: NAVIGATION_GOAL } },
+    });
+    run.stats.gatewayMs += Math.round(performance.now() - started);
+    const p = (result.answers.navigate as { probability?: number } | undefined)?.probability ?? 0;
+    run.navigationGoal = p >= NAVIGATION_GOAL_FLOOR;
+    trace(run, `navigation goal? p=${p.toFixed(2)} -> routing ${run.navigationGoal ? "allowed" : "off"}`);
+  } catch {
+    run.navigationGoal = false;
+  }
+  return run.navigationGoal;
+}
+
+/**
  * When Jev said BLOCKED on the action question, ask it the routing question
  * instead: which reachable page is closer to the goal. Main-content links only,
  * pages already visited excluded. Returns Jev's ranking and its top pick.
@@ -760,7 +851,7 @@ async function advanceActive(): Promise<FastWebTaskResult> {
       const space = actionSpace(run.page, run.goal, run.history, {
         progress: progressState(run),
         canGoBack: run.browser.canGoBack,
-        providedValues: Object.keys(run.data).filter((k) => !run.dataUsed.has(k)),
+        providedValues: providedPreview(run),
         providedFiles: Object.keys(run.files).filter((k) => !run.filesUsed.has(k)),
       });
 
@@ -801,10 +892,21 @@ async function advanceActive(): Promise<FastWebTaskResult> {
       });
 
       if (askReason === "blocked") {
+        // A BLOCKED on a page that is still painting is not a decision. Re-settle
+        // once per no-progress run and, if anything changed, decide again.
+        if (!run.settledForBlocked) {
+          run.settledForBlocked = true;
+          const before = pageSignature(run.page);
+          run.page = await observeStable(run.browser, run.goal, run.topK);
+          if (pageSignature(run.page) !== before) {
+            trace(run, "page changed while settling after BLOCKED; deciding again");
+            continue;
+          }
+        }
         // Jev will not plan a route on the action question, but it routes well when
-        // asked "which page is closer to the goal". Follow that pick while it is
-        // confident enough and we have not wandered too long.
-        const ranked = await rankSteppingStones(run, space);
+        // asked "which page is closer to the goal". Only for goals that are about
+        // reaching another page: on a form goal, routing leaves the form.
+        const ranked = (await routingAllowed(run)) ? await rankSteppingStones(run, space) : { probabilities: {} };
         const pick = ranked.pick;
         const stone = pick && pick.probability >= run.routeFloor ? space.resolve("CLICK", pick.index) : undefined;
         if (pick && stone && run.routeHops < run.routeHopLimit) {

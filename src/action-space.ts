@@ -47,7 +47,7 @@ export interface DismissCandidate {
 export interface ActionSpaceOptions {
   progress?: Progress;
   canGoBack?: boolean;
-  providedValues?: string[];
+  providedValues?: Record<string, string>;
   /** Names of file groups the Bot provided. Without any, file inputs are not offered. */
   providedFiles?: string[];
 }

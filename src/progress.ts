@@ -44,10 +44,19 @@ export type AskReason = "blocked" | "torn_operation" | "torn_target";
  * probability with a clear runner-up gap is not a reason to ask: with ~100
  * options, 0.4 vs 0.05 is decisive.
  */
+/** Operations that change what the loop believes about the task, not just the page. */
+const DIRECTIONAL = new Set(["DONE", "BLOCKED", "BACK"]);
+
 export function shouldAsk(ctx: AskContext): AskReason | undefined {
   if (ctx.operation === "BLOCKED" || !ctx.operation) return "blocked";
+  // Two constructive actions tied (fill this or upload that) is not a dilemma:
+  // both have to happen and either order works. A tie with DONE / BLOCKED / BACK is.
+  const ranked = Object.entries(ctx.operationProbabilities).sort((a, b) => b[1] - a[1]);
+  const runnerUp = ranked[1];
   const opGap = margin(ctx.operationProbabilities);
-  if (opGap != null && opGap < ctx.minMargin) return "torn_operation";
+  if (opGap != null && opGap < ctx.minMargin && runnerUp && (DIRECTIONAL.has(runnerUp[0]) || DIRECTIONAL.has(ctx.operation))) {
+    return "torn_operation";
+  }
   if (ctx.operation === "CLICK" || ctx.operation === "SELECT") {
     const content = ctx.chromeTargets
       ? Object.fromEntries(Object.entries(ctx.targetProbabilities).filter(([index]) => !ctx.chromeTargets!.has(index)))

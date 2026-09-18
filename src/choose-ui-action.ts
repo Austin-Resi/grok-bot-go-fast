@@ -66,7 +66,7 @@ export interface ChooseUiActionInput {
   overlays?: OpenOverlay[];
   progress?: Progress;
   /** Names of values the Bot provided up front; TYPE_TEXT into a matching field needs no round trip. */
-  providedValues?: string[];
+  providedValues?: Record<string, string>;
   /** Names of file groups the Bot provided; UPLOAD attaches them. */
   providedFiles?: string[];
 }
@@ -84,7 +84,7 @@ export interface UiActionQuestions {
     recent_actions: RecentAction[];
     open_overlays: OpenOverlay[];
     progress?: Progress;
-    provided_values?: string[];
+    provided_values?: Record<string, string>;
     provided_files?: string[];
   };
   questions: Record<string, ChoiceQuestion>;
@@ -167,7 +167,7 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
   const rules = [NEXT_ACTION];
   if (hasDismissibleOverlay) rules.push(OVERLAY_OPEN);
   if (stuck) rules.push(NO_PROGRESS);
-  if (input.providedValues?.length || input.providedFiles?.length) rules.push(PROVIDED_VALUES);
+  if (Object.keys(input.providedValues ?? {}).length || input.providedFiles?.length) rules.push(PROVIDED_VALUES);
 
   const questions: Record<string, ChoiceQuestion> = {
     operation: {
@@ -198,7 +198,7 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
       recent_actions: input.recentActions ?? [],
       open_overlays: overlays,
       progress: input.progress,
-      provided_values: input.providedValues?.length ? input.providedValues : undefined,
+      provided_values: Object.keys(input.providedValues ?? {}).length ? input.providedValues : undefined,
       provided_files: input.providedFiles?.length ? input.providedFiles : undefined,
     },
     questions,

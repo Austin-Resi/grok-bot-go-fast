@@ -128,6 +128,18 @@ export class FastBrowser {
     await this.page?.bringToFront().catch(() => undefined);
   }
 
+  /**
+   * Wait for the document to load and the network to go quiet, bounded. Client-
+   * rendered apps paint their real UI after these; a snapshot before them is a shell.
+   */
+  async settleNetwork(maxMs: number): Promise<void> {
+    const page = this.requirePage();
+    const started = performance.now();
+    await page.waitForLoadState("load", { timeout: maxMs }).catch(() => undefined);
+    const left = maxMs - (performance.now() - started);
+    if (left > 100) await page.waitForLoadState("networkidle", { timeout: left }).catch(() => undefined);
+  }
+
   /** Evaluate an expression in the page. Diagnostics and tests only. */
   async evaluate<T>(expression: string): Promise<T> {
     const session = this.session;

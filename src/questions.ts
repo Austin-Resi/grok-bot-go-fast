@@ -29,11 +29,12 @@ e.g. Close, No thanks, I already donated) before any other operation. Never TYPE
 outside an open overlay. A dismiss control that already failed or did not remove the overlay in
 recent_actions should not be chosen again; pick a different dismiss control or continue the goal.`;
 
-export const PROVIDED_VALUES = `The user has supplied values for this form under the names in provided_values, and files under the
-names in provided_files. Every empty field whose label corresponds to one of those names can be
-filled now: choose TYPE_TEXT on it (the value is supplied after this decision, you never write it).
-A file_input with files_attached 0 that matches a provided file group takes UPLOAD. Fill those
-fields first, then submit. Do not choose BLOCKED while such a field is empty.`;
+export const PROVIDED_VALUES = `The user has supplied values for this form in provided_values (name: value) and files in
+provided_files. Every empty text field whose label corresponds to a provided name takes TYPE_TEXT
+(the value is typed for you after this decision). For radios, checkboxes, dropdowns and option
+buttons, CLICK or SELECT the option whose text matches the provided value (e.g. who_made_it: "I did"
+means click the "I did" option). A file_input with files_attached 0 that matches a provided file
+group takes UPLOAD. Fill those first, then submit. Do not choose BLOCKED while such a field is empty.`;
 
 export const TARGET = `Choose the best observed target if the next operation is the one specified in this question.
 Use the user's entire goal, field values, nearby text, and recent actions. This question chooses only
@@ -76,6 +77,18 @@ export const STEPPING_STONE = `Each option is a page reachable from here. Choose
 topic than the current page's subject is. Closer means: the same topic, a topic that contains
 it, or a topic that would normally mention it. Judge by what the linked page is about. Never
 choose a page already listed in visited.`;
+
+/**
+ * Asked once per run before any stepping-stone routing. Routing exists for
+ * "reach page X" goals; on a form goal it navigates away from the form.
+ */
+export const NAVIGATION_GOAL = `Does completing this goal require leaving the current page and reaching a different page by
+following links (for example "open the article about X", "find the settings page")? Answer false when
+the goal is to act on the current page: fill or submit a form, create or edit an item, change
+settings shown here, upload files, or read what is on this page.`;
+
+/** Minimum P(true) on NAVIGATION_GOAL before the loop will route away from a page on its own. */
+export const NAVIGATION_GOAL_FLOOR = 0.6;
 
 /**
  * Follow Jev's stepping-stone pick unasked at or above this probability. Below
