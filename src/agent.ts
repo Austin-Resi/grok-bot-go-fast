@@ -11,6 +11,13 @@ import { fieldText } from "./fill-text.ts";
 import { resolveUiDecision } from "./format.ts";
 import { madeProgress, pickRunnerUp, shouldAsk, type AskReason } from "./progress.ts";
 import {
+  fieldValueSatisfied,
+  isAutocompleteRole,
+  pickProvidedSuggestion,
+  pickSuggestion,
+  valuesEqual,
+} from "./suggest.ts";
+import {
   ASK_MARGIN,
   ASK_OPTIONS,
   GOAL_DONE_FLOOR,
@@ -186,6 +193,8 @@ interface Run {
   events: Array<PageEvent & { step: number }>;
   /** Whether the settle-and-recheck after a BLOCKED has been used since the last progress. */
   settledForBlocked: boolean;
+  /** Combobox we typed into that still needs its matching option clicked. */
+  pendingSuggest: { node: number; text: string; label: string } | undefined;
   data: TaskData;
   dataUsed: Set<string>;
   files: Record<string, string[]>;
@@ -266,6 +275,7 @@ function resetProgress(
   run.lastNoop = undefined;
   run.lastWatchers = undefined;
   run.events = [];
+  run.pendingSuggest = undefined;
   run.stats = freshStats();
 }
 
@@ -344,6 +354,7 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
       lastNoop: undefined,
       lastWatchers: undefined,
       events: [],
+      pendingSuggest: undefined,
       settledForBlocked: false,
       data,
       dataUsed: new Set(),
@@ -364,12 +375,16 @@ export async function fillFastWebTask(text: string): Promise<FastWebTaskResult> 
   if (!run?.pending) {
     throw new Error("No TYPE_TEXT is waiting. Start with fast_web_task. When status is need_text, call fast_web_fill.");
   }
+  const pending = run.pending;
   const value = text.trim();
   if (!value || value.length > 2000) throw new Error("Provide the exact field string to type.");
   // Time spent waiting for the Bot to write the string is not the loop's budget.
   run.deadline = performance.now() + run.maxMs;
   try {
     await applyFill(run, value);
+    if (pending && isAutocompleteRole(pending.action.role)) {
+      await commitAutocomplete(run, pending.action, value, pending.confidence, pending.latencyMs);
+    }
   } catch (error) {
     await abortFastWebTask();
     throw error;
@@ -467,6 +482,27 @@ function providedPreview(run: Run): Record<string, string> {
     out[key] = run.dataUsed.has(key) ? `${preview} [already typed]` : preview;
   }
   return out;
+}
+
+function providedTexts(run: Run): string[] {
+  return Object.values(run.data).map(dataToText).filter((text) => text.trim().length > 0);
+}
+
+function markDataUsedFor(run: Run, text: string): void {
+  for (const [key, value] of Object.entries(run.data)) {
+    if (valuesEqual(dataToText(value), text)) run.dataUsed.add(key);
+  }
+}
+
+function spaceFor(run: Run): ActionSpace {
+  return actionSpace(run.page, run.goal, run.history, {
+    progress: progressState(run),
+    canGoBack: run.browser.canGoBack,
+    providedValues: providedPreview(run),
+    providedFiles: Object.keys(run.files).filter((k) => !run.filesUsed.has(k)),
+    filledTexts: providedTexts(run),
+    pendingSuggestNode: run.pendingSuggest?.node,
+  });
 }
 
 /** Cheap identity for "has the page finished changing": URL, control count, text length, first labels. */
@@ -611,8 +647,10 @@ async function resolveFill(run: Run): Promise<FastWebTaskResult | undefined> {
     if (match) {
       run.stats.gatewayMs += match.gatewayMs;
       run.stats.dataFills += 1;
-      run.dataUsed.add(match.key);
+      const autocomplete = isAutocompleteRole(pending.action.role);
+      if (!autocomplete) run.dataUsed.add(match.key);
       await applyFill(run, match.text, `from data.${match.key} (p=${match.probability.toFixed(2)})`);
+      if (autocomplete) await commitAutocomplete(run, pending.action, match.text, pending.confidence, pending.latencyMs);
       return undefined;
     }
   }
@@ -625,6 +663,7 @@ async function resolveFill(run: Run): Promise<FastWebTaskResult | undefined> {
     recentActions: run.history,
   });
   await applyFill(run, text, "from helper model");
+  if (isAutocompleteRole(pending.action.role)) await commitAutocomplete(run, pending.action, text, pending.confidence, pending.latencyMs);
   return undefined;
 }
 
@@ -705,6 +744,74 @@ async function applyFill(run: Run, text: string, source?: string): Promise<void>
     noProgress: run.streak,
   });
   run.step += 1;
+}
+
+async function clickSuggestion(
+  run: Run,
+  space: ActionSpace,
+  action: SnapshotAction,
+  text: string,
+  note: string,
+  confidence: number | null,
+  latencyMs: number,
+  commit = true,
+): Promise<boolean> {
+  const index = space.indexOf(action);
+  const outcome = await perform(run, action, undefined, note);
+  record(
+    run,
+    action.kind === "select" ? "SELECT" : "CLICK",
+    index,
+    `${action.kind === "select" ? "SELECT" : "CLICK"} [${index ?? action.node ?? "?"}]`,
+    confidence,
+    latencyMs,
+    outcome,
+    note,
+  );
+  if (outcome.ok && commit) {
+    run.pendingSuggest = undefined;
+    markDataUsedFor(run, text);
+  }
+  run.step += 1;
+  return outcome.ok;
+}
+
+/**
+ * After TYPE_TEXT into a combobox/searchbox, click the matching option. Typing
+ * alone does not commit Etsy-style widgets. If the list is not up yet, remember
+ * the query so the next step cannot retype the same field.
+ */
+async function commitAutocomplete(
+  run: Run,
+  field: SnapshotAction,
+  text: string,
+  confidence: number | null,
+  latencyMs: number,
+): Promise<void> {
+  if (field.node == null) return;
+  run.pendingSuggest = { node: field.node, text, label: field.label };
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  run.page = await run.browser.observe({ goal: run.goal, topK: run.topK });
+  let space = spaceFor(run);
+  let suggestion = pickSuggestion(run.page, text, field);
+  if (!suggestion) {
+    const open = run.page.actions.find((a) => a.node === field.node && a.kind === "click");
+    if (open) {
+      await clickSuggestion(run, space, open, text, `opened "${field.label}" to pick autocomplete`, confidence, latencyMs, false);
+      space = spaceFor(run);
+      suggestion = pickSuggestion(run.page, text, field);
+    }
+  }
+  if (!suggestion) return;
+  await clickSuggestion(
+    run,
+    space,
+    suggestion,
+    text,
+    `clicked autocomplete "${suggestion.label}" for "${field.label}"`,
+    confidence,
+    latencyMs,
+  );
 }
 
 /**
@@ -875,12 +982,23 @@ async function advanceActive(): Promise<FastWebTaskResult> {
         return await stop("budget", run, `Stopped after ${Math.round(run.maxMs / 1000)}s of wall-clock time`);
       }
 
-      const space = actionSpace(run.page, run.goal, run.history, {
-        progress: progressState(run),
-        canGoBack: run.browser.canGoBack,
-        providedValues: providedPreview(run),
-        providedFiles: Object.keys(run.files).filter((k) => !run.filesUsed.has(k)),
-      });
+      const space = spaceFor(run);
+
+      if (run.pendingSuggest) {
+        const suggestion = pickSuggestion(run.page, run.pendingSuggest.text, run.pendingSuggest);
+        if (suggestion) {
+          await clickSuggestion(
+            run,
+            space,
+            suggestion,
+            run.pendingSuggest.text,
+            `clicked autocomplete "${suggestion.label}" for "${run.pendingSuggest.label}"`,
+            null,
+            0,
+          );
+          continue;
+        }
+      }
 
       // The gate tripped: stop guessing, hand the page to the planner with options.
       if (run.streak >= run.noProgressLimit) {
@@ -1035,6 +1153,28 @@ async function advanceActive(): Promise<FastWebTaskResult> {
       const confidenceNote = lowConfidence ? `low confidence ${decision.confidence?.toFixed(2)}` : undefined;
 
       if (action.kind === "fill") {
+        const texts = providedTexts(run);
+        if (isAutocompleteRole(action.role)) {
+          const hit = pickProvidedSuggestion(run.page, action.value?.trim() ? [action.value, ...texts] : texts, action);
+          if (hit) {
+            await clickSuggestion(
+              run,
+              space,
+              hit.action,
+              hit.text,
+              `clicked visible option "${hit.action.label}" instead of TYPE_TEXT into "${action.label}"`,
+              decision.confidence,
+              latencyMs,
+            );
+            continue;
+          }
+        }
+        if (fieldValueSatisfied(action.value, texts)) {
+          run.streak += 1;
+          record(run, "TYPE_TEXT", decision.target, execute, decision.confidence, latencyMs, undefined, "field already matches a provided value; skipped retype");
+          run.step += 1;
+          continue;
+        }
         run.pending = {
           action,
           execute,

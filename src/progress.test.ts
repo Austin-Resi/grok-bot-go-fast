@@ -6,6 +6,12 @@ test("madeProgress: URL change always counts, content change only for page actio
   assert.equal(madeProgress("click", { urlChanged: true, textChanged: false }, true), true);
   assert.equal(madeProgress("click", { urlChanged: false, textChanged: true }, true), true);
   assert.equal(madeProgress("click", { urlChanged: false, textChanged: false }, true), false);
+  assert.equal(
+    madeProgress("fill", { urlChanged: false, textChanged: true, fieldsChanged: false }, true),
+    false,
+    "retyping the same value (listbox appears) is not progress",
+  );
+  assert.equal(madeProgress("fill", { urlChanged: false, textChanged: true, fieldsChanged: true }, true), true);
   assert.equal(madeProgress("scroll", { urlChanged: false, textChanged: true }, true), false, "scrolling is not progress");
   assert.equal(madeProgress("wait", { urlChanged: false, textChanged: true }, true), false);
   assert.equal(madeProgress("back", { urlChanged: true, textChanged: true }, true), true);

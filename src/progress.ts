@@ -17,6 +17,9 @@ export function madeProgress(kind: SnapshotAction["kind"], delta: PageDelta, ok:
   if (!ok) return false;
   if (delta.urlChanged) return true;
   if (kind === "scroll" || kind === "wait") return false;
+  // Opening an autocomplete list changes the visible text without changing the
+  // field. Retyping the same string must not reset the no-progress gate.
+  if (kind === "fill") return delta.fieldsChanged === true;
   return delta.textChanged || delta.fieldsChanged === true;
 }
 

@@ -293,4 +293,51 @@ describe("FastBrowser", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+
+  it("labels open combobox options as Field → Value and clicks the match after typing", { timeout: 30_000 }, async () => {
+    process.env.CRACK_BOT_HEADLESS = "true";
+    process.env.CRACK_BOT_CDP_DISCOVER = "false";
+    delete process.env.CDP_URL;
+    const html = `<!doctype html>
+      <label for="cat">Category</label>
+      <input id="cat" role="combobox" aria-label="Category" aria-expanded="false" aria-controls="list" value="">
+      <ul id="list" role="listbox" hidden>
+        <li role="option">Paintings</li>
+        <li role="option" id="prints">Digital Prints</li>
+      </ul>
+      <script>
+        const input = document.getElementById("cat");
+        const list = document.getElementById("list");
+        const open = () => { input.setAttribute("aria-expanded","true"); list.hidden = false; };
+        input.addEventListener("focus", open);
+        input.addEventListener("input", open);
+        input.addEventListener("click", open);
+        for (const opt of list.querySelectorAll("[role=option]")) {
+          opt.addEventListener("click", () => {
+            window.__picked = opt.textContent;
+            input.value = opt.textContent;
+            list.hidden = true;
+            input.setAttribute("aria-expanded","false");
+          });
+        }
+      </script>`;
+    const browser = new FastBrowser();
+    try {
+      await browser.open(`data:text/html,${encodeURIComponent(html)}`);
+      const closed = await browser.observe();
+      assert.equal(closed.actions.filter((a) => a.role === "option").length, 0, "collapsed list is not offered");
+      const field = closed.actions.find((a) => a.kind === "fill" && a.label === "Category");
+      assert.ok(field);
+
+      await browser.act(field, "Digital Prints");
+      const open = await browser.observe();
+      const option = open.actions.find((a) => a.role === "option" && /Digital Prints/.test(a.label));
+      assert.ok(option, `expected a Category → Digital Prints option, got ${JSON.stringify(open.actions.map((a) => a.label))}`);
+      assert.equal(option.label, "Category → Digital Prints");
+      await browser.act(option);
+      assert.equal(await browser.evaluate<string>("window.__picked"), "Digital Prints");
+    } finally {
+      await browser.close();
+    }
+  });
 });

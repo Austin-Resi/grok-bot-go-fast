@@ -31,10 +31,14 @@ recent_actions should not be chosen again; pick a different dismiss control or c
 
 export const PROVIDED_VALUES = `The user has supplied values for this form in provided_values (name: value) and files in
 provided_files. Every empty text field whose label corresponds to a provided name takes TYPE_TEXT
-(the value is typed for you after this decision). For radios, checkboxes, dropdowns and option
-buttons, CLICK or SELECT the option whose text matches the provided value (e.g. who_made_it: "I did"
-means click the "I did" option). A file_input with files_attached 0 that matches a provided file
-group takes UPLOAD. Fill those first, then submit. Do not choose BLOCKED while such a field is empty.`;
+(the value is typed for you after this decision). Do not TYPE_TEXT a field whose current_value already
+matches a provided value. For radios, checkboxes, dropdowns, comboboxes and option buttons, CLICK or
+SELECT the option whose text matches the provided value (e.g. who_made_it: "I did" means click the
+"I did" option; category: "Digital Prints" means click "Digital Prints" or "Category → Digital Prints",
+not type into the search box). After TYPE_TEXT into a combobox or searchbox, CLICK the matching
+autocomplete option; typing alone does not commit it. A file_input with files_attached 0 that matches
+a provided file group takes UPLOAD. Fill those first, then submit. Do not choose BLOCKED while such a
+field is empty.`;
 
 /**
  * Two independent watchers asked alongside the action choice, in the same
@@ -131,9 +135,10 @@ export const IRREVERSIBLE =
  */
 export const FIELD_MATCH = `The user is filling a form and has provided named values up front. Choose the provided value
 that belongs in the selected field, judging by the field's label, role, and current value against
-each value's name and preview. A value marked already_used was typed into another field; choose it
-again only if this field clearly asks for the same thing. If no provided value fits this field,
-choose __none__.`;
+each value's name and preview. A value marked already_used is done; choose it again only if this
+is a different field that needs the same string. If the field's current_value already equals a
+provided value, choose that value so the loop can skip a no-op retype. If no provided value fits
+this field, choose __none__.`;
 
 export const TEXT_VALUE = `Return a JSON object with exactly one key, text: the exact string to enter in the selected field.
 Infer the value from the original goal and field meaning, using current page context and history.

@@ -146,7 +146,23 @@ function (opts) {
     if (!hit) { indexOffscreen(e,rname); continue; }
     if (hit.covered) { covered++; continue; }
     const r=e.getBoundingClientRect();
-    const base={node:identity(e),role:rname,label:name(e)||rname,
+    let label=name(e)||rname;
+    // Listbox rows belong to the open combobox. Label them like native <select>
+    // options ("Category → Digital Prints") so the policy can CLICK the match
+    // instead of TYPE_TEXT into the search box again.
+    if (rname==='option' || rname==='menuitem' || rname==='menuitemradio') {
+      const list=e.closest('[role="listbox"],[role="menu"],[role="tree"]');
+      let owner=null;
+      if (list?.id) {
+        try {
+          owner=document.querySelector('[aria-controls~="'+CSS.escape(list.id)+'"],[aria-owns~="'+CSS.escape(list.id)+'"]');
+        } catch {}
+      }
+      if (!owner) owner=document.querySelector('[role="combobox"][aria-expanded="true"]');
+      const ownerLabel=owner ? name(owner) : '';
+      if (ownerLabel && !label.startsWith(ownerLabel)) label=ownerLabel+' → '+label;
+    }
+    const base={node:identity(e),role:rname,label,
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
     if (rname==='link') { const href=e.getAttribute('href'); if (href) base.href=href; }
     if (e.closest(MAIN) && !e.closest(CHROME)) base.main=true;

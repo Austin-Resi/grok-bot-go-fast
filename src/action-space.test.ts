@@ -116,6 +116,35 @@ describe("actionSpace", () => {
     assert.deepEqual(withFiles.input.providedFiles, ["photos"]);
   });
 
+  it("withholds TYPE_TEXT when the field already matches provided data or awaits a suggestion", () => {
+    const page = {
+      url: "https://www.etsy.com/listing/create",
+      title: "Create",
+      text: "Category",
+      actions: [
+        { id: "e1", kind: "fill" as const, node: 1, role: "combobox", label: "Category", value: "Digital Prints" },
+        { id: "e2", kind: "click" as const, node: 1, role: "combobox", label: "Open Category", value: "Digital Prints" },
+        { id: "e3", kind: "click" as const, node: 4, role: "option", label: "Category → Digital Prints" },
+        { id: "e4", kind: "fill" as const, node: 9, role: "textbox", label: "Title", value: "" },
+      ],
+    };
+    const space = actionSpace(page, "create listing", [], { filledTexts: ["Digital Prints", "Hand-thrown ceramic mug"] });
+    const category = space.input.elements.find((e) => e.label === "Category");
+    assert.ok(category);
+    assert.deepEqual(category.operations, ["CLICK"], "satisfied combobox is not a TYPE_TEXT target");
+    assert.equal(space.resolve("TYPE_TEXT", category.index), undefined);
+    assert.equal(space.resolve("CLICK", category.index)?.label, "Open Category");
+    const option = space.input.elements.find((e) => e.label === "Category → Digital Prints");
+    assert.ok(option);
+    assert.deepEqual(option.operations, ["CLICK"]);
+    const title = space.input.elements.find((e) => e.label === "Title");
+    assert.deepEqual(title?.operations, ["TYPE_TEXT"]);
+
+    const pending = actionSpace(page, "create listing", [], { pendingSuggestNode: 1, filledTexts: [] });
+    const still = pending.input.elements.find((e) => e.label === "Category");
+    assert.deepEqual(still?.operations, ["CLICK"], "pending suggestion withholds TYPE_TEXT even if values are empty");
+  });
+
   it("does not offer BACK without navigation history", () => {
     const space = actionSpace(
       { url: "https://example.com", title: "x", text: "", actions: [{ id: "wait", kind: "wait", label: "Wait" }] },

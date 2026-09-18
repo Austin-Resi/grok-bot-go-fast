@@ -110,7 +110,7 @@ The tab stays open (`open: true`) after `need_text`, `need_decision`, `blocked`,
 
 ## What it handles so you don't have to
 
-Cookie walls, donate banners and modals are dismissed before typing; controls hidden under them are never offered. Wrapped links are hit-tested per line box. Offscreen links and fields are scrolled to when chosen. Each step is one ~0.5s Jev call that also independently asks "is the goal done?" and "are we stuck?" so a confident click cannot talk a finish into existence. Repeating an action that changed nothing takes Jev's runner-up instead of retrying. A stalled page is a failed step, not a crashed run.
+Cookie walls, donate banners and modals are dismissed before typing; controls hidden under them are never offered. Wrapped links are hit-tested per line box. Offscreen links and fields are scrolled to when chosen. Custom comboboxes (Etsy Category, airport pickers) are type-then-click: after TYPE_TEXT the matching option is clicked, a field that already shows a provided value is not retyped, and retyping the same string does not reset the progress gate. Each step is one ~0.5s Jev call that also independently asks "is the goal done?" and "are we stuck?" so a confident click cannot talk a finish into existence. Repeating an action that changed nothing takes Jev's runner-up instead of retrying. A stalled page is a failed step, not a crashed run.
 
 ## Do not
 

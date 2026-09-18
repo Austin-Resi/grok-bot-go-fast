@@ -1,4 +1,5 @@
 import type { ChooseUiActionInput, OpenOverlay, Progress, RecentAction, UiElement } from "./choose-ui-action.ts";
+import { fieldValueSatisfied } from "./suggest.ts";
 
 export interface SnapshotAction {
   id: string;
@@ -50,6 +51,10 @@ export interface ActionSpaceOptions {
   providedValues?: Record<string, string>;
   /** Names of file groups the Bot provided. Without any, file inputs are not offered. */
   providedFiles?: string[];
+  /** Raw provided texts; a fill whose current value equals one of these is already done. */
+  filledTexts?: string[];
+  /** Combobox node that still needs its matching option clicked; TYPE_TEXT is withheld. */
+  pendingSuggestNode?: number;
 }
 
 const KIND_TO_OPERATION: Record<string, string> = {
@@ -68,6 +73,8 @@ export const BACK_ACTION: SnapshotAction = {
 export interface ActionSpace {
   input: ChooseUiActionInput;
   resolve(operation: string, target: string | null): SnapshotAction | undefined;
+  /** Element index for an observed action, when it is still offered. */
+  indexOf(action: SnapshotAction): string | null;
   /** First dismiss control of an open overlay that has not already been tried. */
   dismissFor(tried: ReadonlySet<number>): DismissCandidate | undefined;
   /** Whether the page can scroll further down / up right now. */
@@ -117,13 +124,16 @@ export function actionSpace(
     if (action.offscreen && indices.has(node)) continue;
     // File inputs are only useful when the Bot brought files.
     if (action.kind === "upload" && !options.providedFiles?.length) continue;
+    const withholdFill =
+      action.kind === "fill" &&
+      (action.node === options.pendingSuggestNode || fieldValueSatisfied(action.value, options.filledTexts ?? []));
     if (!indices.has(node)) {
       const index = String(elements.length + 1);
       indices.set(node, index);
       const element: UiElement = {
         index,
         role: action.role ?? "button",
-        label: action.label.split(" → ")[0] ?? action.label,
+        label: action.kind === "select" ? (action.label.split(" → ")[0] ?? action.label) : action.label,
         operations: [],
         value: action.kind === "select" ? (action.current_value ?? "") : (action.value ?? ""),
       };
@@ -151,6 +161,9 @@ export function actionSpace(
       }
       elements.push(element);
     }
+    // Index the field so its label stays "Category", not "Open Category", but do
+    // not offer TYPE_TEXT for a value that is already typed or waiting on a pick.
+    if (withholdFill) continue;
     const index = indices.get(node)!;
     const element = elements[Number(index) - 1];
     if (!element.operations.includes(operation)) element.operations.push(operation);
@@ -193,6 +206,14 @@ export function actionSpace(
       if (operation === "BACK") return options.canGoBack ? BACK_ACTION : undefined;
       if (!target) return undefined;
       return targets[operation]?.[target];
+    },
+    indexOf(action) {
+      for (const group of Object.values(targets)) {
+        for (const [index, candidate] of Object.entries(group)) {
+          if (candidate.node === action.node && candidate.kind === action.kind && candidate.label === action.label) return index;
+        }
+      }
+      return null;
     },
     dismissFor(tried) {
       return dismissals.find((candidate) => !tried.has(candidate.overlay));

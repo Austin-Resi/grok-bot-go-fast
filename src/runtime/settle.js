@@ -9,7 +9,7 @@ async function (action) {
       stopped = true;
       resolve();
     };
-    setTimeout(finish, autocomplete ? 200 : 50);
+    setTimeout(finish, autocomplete ? 400 : 50);
     const tick = () => {
       if (stopped) return;
       frames += 1;
