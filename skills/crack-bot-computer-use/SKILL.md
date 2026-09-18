@@ -1,121 +1,106 @@
 ---
 name: crack-bot-computer-use
-description: Speeds up Grok Bot web computer use by delegating to fast_web_task. That tool snapshots live DOM nodes, asks TypeSafe Jev on Vercel AI Gateway what to click, and clicks the node. When a text field is needed, you write the string and call fast_web_fill. Use for forms, search, browsing, and any site with normal HTML controls. Do not screenshot-click those pages.
+description: Your fast hands for the web. For any task on a website or web app (forms, listings, search, browsing, settings, multi-page flows) call fast_web_task with the whole goal and everything you already know, then answer its short questions. It reads the live page, decides in ~0.5s per step with TypeSafe Jev, and clicks or types on the real DOM node. Use this instead of screenshot computer use on any page with normal HTML controls.
 ---
 
-# crack-bot computer use
+# crack-bot: you think, it acts
 
-For a website or web app, call **`fast_web_task`**. Do not screenshot, do not guess coordinates, do not build an element table yourself.
+Two minds share the work. **Jev** (inside crack-bot) is System 1: it looks at a page and picks the next click in half a second, and it is very good at that. **You** are System 2: you know what the user wants, you have the facts, and you can plan a route. crack-bot runs Jev in a loop and only stops to ask you when a decision needs a planner. Play your part well and a 20-field form fills in seconds, a 5-hop browse finishes in one call, and you are asked once or twice, not once per click.
 
-`fast_web_task` is the jev-ultrafast loop:
+## Four habits
 
-1. Read visible controls in the page and keep a pointer to each DOM node
-2. Ask Jev (`typesafe-ai/jev` on Vercel AI Gateway) for the next operation + index
-3. Click **that node**
-4. Repeat until DONE, BLOCKED, or a text field is needed
-
-You never need to know where to click. The node map lives inside the tool.
+**1. Hand over the whole goal once, with the stop condition.**
 
 ```
 fast_web_task({
-  url: "https://www.google.com/travel/flights",
-  goal: "Find one-way flights from Zurich to London on September 20, 2026. Stop when matching options are visible."
+  url: "https://en.wikipedia.org/wiki/Green_Bay_Packers",
+  goal: "Reach the Wikipedia article about Mars (the planet). Stop when the Mars article is open."
 })
 ```
 
-## TYPE_TEXT — you write the string
+Not "click Green Bay, Wisconsin" then "click Wisconsin". Say what to achieve, not which controls to press. crack-bot sees links below the fold, scrolls to them, routes through stepping stones, and finds its own way. Splitting a flow into one call per click is the slow path you are replacing.
 
-Jev cannot generate text. When the tool needs a field value it **pauses** and returns:
+**2. Don't forbid the obvious move unless the user did.** Jev's first instinct for "reach the Mars article" is to type Mars into search, because that is the fastest way. Only say "links only" or "do not use search" if the user actually cares about the method.
 
-```
-status: "need_text"
-field: { label, role, value }
-next: "Write the exact string for this field..."
-```
-
-Then:
-
-1. Infer the exact string from the original **goal** and `field.label`
-2. Call **`fast_web_fill({ text })`** — the tool types it into the stored live node and continues
-3. If you get `need_text` again, fill the next field the same way
-4. Do **not** call `fast_web_task` again until the run returns `done`, `blocked`, or `budget`; answer `need_text` and `need_decision` first
-5. Do **not** screenshot. Do not click. Do not type into the page yourself.
+**3. Give it everything you know up front, in `data`.**
 
 ```
-fast_web_fill({ text: "Zurich" })
+fast_web_task({
+  url: "https://www.etsy.com/your/shops/me/tools/listings/create",
+  goal: "Create a draft listing with the provided data. Stop when the draft is saved.",
+  data: {
+    title: "Hand-thrown ceramic mug",
+    description: "Wheel-thrown stoneware, 12 oz, dishwasher safe.",
+    price: "34.00",
+    quantity: 3,
+    tags: ["ceramic", "mug", "handmade", "stoneware"],
+    category: "Home & Living"
+  }
+})
 ```
 
-The browser session stays open on the MCP process after `need_text`, `blocked`, and `budget`, and after `done` when attached to the Bot's Chrome. The result says so with `open: true`. Call **`fast_web_abort`** when you are finished with the page.
+For every text field Jev picks, crack-bot asks Jev which provided value belongs there (one cheap comparison, ~0.4s) and types it. You are asked (`need_text`) only for a field nothing in `data` fits. Measured: a 7-field listing form, 5 text fields plus a dropdown and Save, in 5.7s with zero questions to you. The same form field-by-field would be 7 turns. Key names are free-form; use the field's natural name. Values are never invented: a field with no matching data is left for you.
 
-To keep working on that same page (new goal, more steps), call:
+**4. When asked, compare, don't deliberate.** crack-bot's questions come with the options already laid out. Read them, pick, answer. Never respond by screenshotting or by restarting `fast_web_task`; the run is paused and waiting for your one answer.
 
-```
-fast_web_task({ reuseBrowser: true, goal: "..." })
-```
+## The three questions it can ask
 
-A new `fast_web_task` with a `url` and no `reuseBrowser` replaces the session. `keepOpen` overrides the default in either direction.
-
-If the result has `attached: true`, this is your Chrome on your `display` (shared cookies; `attachedTo` names the profile). Do not quit Chrome. On `blocked`, use screenshot computer use on the **same** `url` — the tab is already in front.
-
-## Dialogs, banners, cookie walls
-
-The tool handles these. Controls hidden under a modal are never offered to Jev, and if Jev wants to type into a field while a dismissible banner is open, the tool clicks the banner's Close / No thanks / I already donated control first (a step with `note: "dismissed overlay…"`). You never get `need_text` for a covered field. If a page returns `blocked` with an overlay still up (CAPTCHA, unlabeled close icon), dismiss it with screenshot computer use, then `fast_web_task({ reuseBrowser: true, goal })`.
-
-Each call returns within ~45s (`status: "budget"`, tab open). Continue with `reuseBrowser: true`; that is a normal path, not a failure.
-
-## need_decision — you are the planner
-
-Jev is System 1: fast, confident when the next step is on the page. You are System 2. When Jev cannot pick, the tool **pauses** and returns:
+**`need_text`**: a field needs a value and nothing in `data` fits.
 
 ```
-status: "need_decision"
-reason: "Jev cannot advance the goal in one step from this page"
-decision: {
-  reason: "blocked" | "torn_operation" | "torn_target" | "irreversible",
-  jev: { operation, index, label, confidence } | undefined,
-  options: [{ index, operation, label, href, offscreen, main, probability }, ...],
-  controls: ["SCROLL_DOWN", "BACK", "DONE", "STOP"]
-}
+status: "need_text", field: { label: "Shipping from ZIP", role: "textbox", value: "" }
+→ fast_web_fill({ text: "53703" })
 ```
 
-This happens when Jev says BLOCKED (the goal is not one click away: route planning is your job), when Jev is torn between two picks, or when Jev wants to click something hard to undo (Publish, Pay, Delete, Send). Read the options, think about the route, and answer:
+**`need_decision`**: Jev cannot pick alone. Happens when the goal is several hops away and Jev's routing ran out (dead end), when two options are a genuine tie, or when it is about to click something hard to undo (Publish, Pay, Delete, Send). You get the candidate options with Jev's probabilities where it had them, main content only.
 
 ```
-fast_web_choose({ choice: "58" })
-fast_web_choose({ choice: "58", goal: "Reach the United States article, then Mars." })
+status: "need_decision", reason: "Jev is torn between targets"
+decision.options: [{ index: "40", label: "Atmosphere of Mars", probability: 0.43 }, { index: "41", label: "Mars", probability: 0.28 }, ...]
+→ fast_web_choose({ choice: "41" })
+→ fast_web_choose({ choice: "12", goal: "Reach the United States article, then Mars." })   // narrow the goal for the next hops
+→ fast_web_choose({ choice: "DONE" })    // the goal is already satisfied
+→ fast_web_choose({ choice: "STOP" })    // hand off to screenshot computer use
 ```
 
-`options` are main-content links only, ordered by Jev's own stepping-stone ranking (`probability`) when it had one; site chrome is left out. Passing `goal` narrows the goal for the rest of the run, which is the right move when the original goal needs several hops: name the next stepping stone. Controls: `BACK`, `SCROLL_DOWN`, `SCROLL_UP`, `DONE` (confirm the goal is met), `STOP` (hand off to screenshot computer use). Do not screenshot to answer; the options are the page. Once you choose, Jev takes over again and runs unasked until the next decision it cannot make.
+Controls: `BACK`, `SCROLL_DOWN`, `SCROLL_UP`, `DONE`, `STOP`. For an `irreversible` ask, `decision.jev` holds the button Jev wants to click; confirm it with its index or choose otherwise. Measured on link-only Wikipedia routes: Packers → Mars in 4 hops, Kevin Bacon → Photosynthesis in 6, Golden Gate Bridge → Beethoven in 4–6, all under 10s with zero or one ask. You are asked only for real ties.
 
-Measured: Earth → Mars finishes in 2 steps with no asks. Green Bay Packers → Mars link-only takes 4 hops in ~4–9s with zero or one ask; Jev routes the stepping stones itself (Packers → NFL → United States → Mars Exploration Program → Mars). You are asked only for genuine ties and dead ends.
+**`budget`**: the call used its ~45s. Nothing is wrong. The tab is open; continue with the same goal:
 
-## Multi-step goals
+```
+fast_web_task({ reuseBrowser: true, goal })
+```
 
-Give the whole goal once, including the stop condition, and let the tool run it. The tool sees links below the fold and scrolls to them. Do not split a browse or form flow into one call per click. If a run returns `budget` mid-way, continue with `fast_web_task({ reuseBrowser: true, goal })` using the same goal; `visited` in the result shows the path so far.
+## When it finishes
 
-`fillMode: "helper"` is optional: a small Gateway chat model invents the string instead of asking you.
+`done` means Jev saw visible evidence the goal was met (a confirmation, the target page). Verify against the result's `url`, `title`, and `text` if the outcome matters. `blocked` means it gave up after several steps that changed nothing; the tab is open at `url`, so continue there with screenshot computer use rather than starting over. `steps[]` shows every action with a note (`from data.price`, `route: "United States" is closer to the goal`, `dismissed overlay…`), and `stats` counts data fills, route hops, and asks.
+
+## Sessions
+
+The tab stays open (`open: true`) after `need_text`, `need_decision`, `blocked`, `budget`, and after `done` when attached to your Chrome. `fast_web_task({ reuseBrowser: true, goal })` continues on that page with a new goal. `fast_web_abort` closes the crack-bot tab; it never quits your Chrome. `attached: true` means it is driving your own Chrome (your logins), on your `display`.
+
+## What it handles so you don't have to
+
+Cookie walls, donate banners and modals are dismissed before typing; controls hidden under them are never offered. Wrapped links are hit-tested per line box. Offscreen links and fields are scrolled to when chosen. Each step is one ~0.5s Jev call; a stalled page is a failed step, not a crashed run.
 
 ## Do not
 
-- Screenshot → VLM → `click(x, y)`
-- Call `jev_choose_ui_action` and then try to click the index yourself
-- Ask Jev to generate the TYPE_TEXT string
-- Restart `fast_web_task` while a fill is waiting — that aborts the live page unless you call `fast_web_fill` first
+- Screenshot → VLM → `click(x, y)` on a page with HTML controls
+- Call `fast_web_task` once per click
+- Restart `fast_web_task` while `need_text` or `need_decision` is waiting; answer it
+- Withhold values you already have; put them in `data`
+- Call `jev_choose_ui_action` and click the index yourself
 
 ## Fall back to screenshot computer use only if
 
-- `fast_web_task` / `fast_web_fill` returns `blocked` (canvas, empty tree, low confidence) — continue screenshot computer use on the returned url; the tab is still open
-- The site is a game, canvas editor, or otherwise not HTML/ARIA controls
-- The tool errors because Chrome/Chromium is missing (`npx playwright install chromium`) and CDP attach failed
-
-## Auth
-
-Needs `AI_GATEWAY_API_KEY`. Jev is evaluation, not chat completions. Create a key at the [AI Gateway API keys](https://vercel.com/d?to=%2Fai-gateway%2Fapi-keys) page.
+- `blocked` comes back, or you answer `STOP`; continue on the same tab
+- The page is a canvas, game, or CAPTCHA (non-HTML controls)
+- Chrome is missing on this computer (`npx playwright install chromium`)
 
 ## Other tools
 
-- `fast_web_fill` — resume after `need_text`
-- `fast_web_choose` — resume after `need_decision`
-- `fast_web_abort` — close the crack-bot tab (never quits the Bot's Chrome when attached)
-- `jev_decide` — non-UI judgments (choice / score / boolean) on arbitrary state
-- `jev_choose_ui_action` — debug only; does not click
+- `fast_web_fill` answers `need_text`; `fast_web_choose` answers `need_decision`; `fast_web_abort` closes the tab
+- `jev_decide`: non-UI judgments (choice / score / boolean) over any state you give it, ~0.5s
+- `jev_choose_ui_action`: debug only; decides but does not click
+
+Auth: `AI_GATEWAY_API_KEY` in the server env. The decision model is `typesafe-ai/jev` on Vercel AI Gateway.

@@ -56,7 +56,11 @@ export function createServer(): McpServer {
           .string()
           .optional()
           .describe("Starting URL. Required unless reuseBrowser is true."),
-        goal: z.string().describe("The full task. Stop condition belongs here."),
+        goal: z.string().describe("The full task, including the stop condition. Say what to achieve, not which controls to click."),
+        data: z
+          .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]))
+          .optional()
+          .describe("Values you already know for form fields, keyed by name (title, price, tags, email…). Typed into matching fields with no round trip; need_text is only returned for fields nothing here fits. Give everything up front."),
         maxSteps: z.number().int().min(1).max(40).optional(),
         maxMs: z
           .number()
@@ -79,9 +83,9 @@ export function createServer(): McpServer {
           .describe("Keep the already-open page instead of launching a new browser. Pass a url to navigate that same window. Do not use while status is need_text."),
       }),
     },
-    async ({ url, goal, maxSteps, maxMs, fillMode, keepOpen, reuseBrowser }) => {
+    async ({ url, goal, data, maxSteps, maxMs, fillMode, keepOpen, reuseBrowser }) => {
       try {
-        const result = await startFastWebTask({ url, goal, maxSteps, maxMs, fillMode, keepOpen, reuseBrowser });
+        const result = await startFastWebTask({ url, goal, data, maxSteps, maxMs, fillMode, keepOpen, reuseBrowser });
         return jsonResult(result);
       } catch (error) {
         return errorResult(error instanceof Error ? error.message : String(error));

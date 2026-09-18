@@ -1,4 +1,4 @@
-import { MAX_CHOICE_OPTIONS, NEXT_ACTION, NO_PROGRESS, OVERLAY_OPEN, TARGET } from "./questions.ts";
+import { MAX_CHOICE_OPTIONS, NEXT_ACTION, NO_PROGRESS, OVERLAY_OPEN, PROVIDED_VALUES, TARGET } from "./questions.ts";
 
 export interface UiElement {
   index: string;
@@ -63,6 +63,8 @@ export interface ChooseUiActionInput {
   extraOperations?: Record<string, string>;
   overlays?: OpenOverlay[];
   progress?: Progress;
+  /** Names of values the Bot provided up front; TYPE_TEXT into a matching field needs no round trip. */
+  providedValues?: string[];
 }
 
 export interface ChoiceQuestion {
@@ -78,6 +80,7 @@ export interface UiActionQuestions {
     recent_actions: RecentAction[];
     open_overlays: OpenOverlay[];
     progress?: Progress;
+    provided_values?: string[];
   };
   questions: Record<string, ChoiceQuestion>;
   truncated: boolean;
@@ -157,6 +160,7 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
   const rules = [NEXT_ACTION];
   if (hasDismissibleOverlay) rules.push(OVERLAY_OPEN);
   if (stuck) rules.push(NO_PROGRESS);
+  if (input.providedValues?.length) rules.push(PROVIDED_VALUES);
 
   const questions: Record<string, ChoiceQuestion> = {
     operation: {
@@ -187,6 +191,7 @@ export function buildUiActionQuestions(input: ChooseUiActionInput): UiActionQues
       recent_actions: input.recentActions ?? [],
       open_overlays: overlays,
       progress: input.progress,
+      provided_values: input.providedValues?.length ? input.providedValues : undefined,
     },
     questions,
     truncated,

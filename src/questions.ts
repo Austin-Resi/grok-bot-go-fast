@@ -29,6 +29,11 @@ e.g. Close, No thanks, I already donated) before any other operation. Never TYPE
 outside an open overlay. A dismiss control that already failed or did not remove the overlay in
 recent_actions should not be chosen again; pick a different dismiss control or continue the goal.`;
 
+export const PROVIDED_VALUES = `The user has supplied values for this form under the names in provided_values. Every empty field
+whose label corresponds to one of those names can be filled now: choose TYPE_TEXT on it (the value is
+supplied after this decision, you never write it). Fill those fields first, then submit. Do not choose
+BLOCKED while such a field is empty.`;
+
 export const TARGET = `Choose the best observed target if the next operation is the one specified in this question.
 Use the user's entire goal, field values, nearby text, and recent actions. This question chooses only
 a target for that operation; another question decides which operation to execute. Do not choose
@@ -84,6 +89,17 @@ export const ROUTE_HOPS = 8;
 /** Controls whose activation is hard to undo. The loop asks before clicking them. */
 export const IRREVERSIBLE =
   /^(publish|pay( now)?|place (your )?order|buy( now)?|checkout|confirm (purchase|payment|order)|delete|remove( listing)?|send|submit (payment|order)|unsubscribe|deactivate|cancel (subscription|order))\b/i;
+
+/**
+ * Which of the Bot's provided values belongs in the selected field. A small
+ * fixed comparison, the shape Jev answers best. The __none__ option keeps it
+ * from forcing a fit.
+ */
+export const FIELD_MATCH = `The user is filling a form and has provided named values up front. Choose the provided value
+that belongs in the selected field, judging by the field's label, role, and current value against
+each value's name and preview. A value marked already_used was typed into another field; choose it
+again only if this field clearly asks for the same thing. If no provided value fits this field,
+choose __none__.`;
 
 export const TEXT_VALUE = `Return a JSON object with exactly one key, text: the exact string to enter in the selected field.
 Infer the value from the original goal and field meaning, using current page context and history.

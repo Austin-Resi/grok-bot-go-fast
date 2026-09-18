@@ -13,15 +13,15 @@
   "interface": {
     "displayName": "crack-bot",
     "shortDescription": "Fast live-DOM web tasks instead of slow screenshot computer use.",
-    "longDescription": "crack-bot runs the jev-ultrafast loop on the Bot computer: snapshot live DOM nodes, ask TypeSafe Jev on Vercel AI Gateway (typesafe-ai/jev) what to do, click that node. Call fast_web_task instead of screenshot computer use. On TYPE_TEXT, write the string and call fast_web_fill. Attaches to this agent's Chrome when remote debugging is enabled. Requires AI_GATEWAY_API_KEY.",
+    "longDescription": "crack-bot is the Bot's fast hands for the web. Give fast_web_task the whole goal plus everything you already know in data; it reads the live page, decides each step in ~0.5s with TypeSafe Jev, and clicks or types on the real DOM node. Fills forms from data with no round trips, routes multi-hop browsing itself, and asks you (need_text / need_decision) only when a decision needs a planner. Attaches to this agent's Chrome when remote debugging is enabled. Requires AI_GATEWAY_API_KEY.",
     "developerName": "Austin Lucas",
     "category": "Productivity",
     "capabilities": ["Read"],
     "websiteURL": "https://github.com/Austin-Resi/grok-bot-go-fast",
     "defaultPrompt": [
-      "Use fast_web_task for web work. Do not screenshot-click.",
-      "If status is need_text, write the field value from the goal and call fast_web_fill.",
-      "Open example.com with fast_web_task and stop when the heading is visible."
+      "For web tasks call fast_web_task once with the whole goal and its stop condition. Put every value you already know in data. Do not screenshot-click pages with HTML controls.",
+      "Answer need_text with fast_web_fill and need_decision with fast_web_choose. Do not restart the task while one is waiting.",
+      "Fill in this listing form with the provided data and save the draft."
     ]
   }
 }

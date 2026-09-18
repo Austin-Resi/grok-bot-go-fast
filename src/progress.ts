@@ -3,18 +3,21 @@ import type { SnapshotAction } from "./action-space.ts";
 export interface PageDelta {
   urlChanged: boolean;
   textChanged: boolean;
+  /** Form state (field values, checks, selections) changed. */
+  fieldsChanged?: boolean;
 }
 
 /**
- * Did this step move the task forward? URL changes always count. Content changes
- * count only for actions that act on the page; scrolling changes the visible text
- * by definition and must not reset the gate, or a scroll loop never trips it.
+ * Did this step move the task forward? URL changes always count. Content or
+ * form-state changes count only for actions that act on the page; scrolling
+ * changes the visible text by definition and must not reset the gate, or a
+ * scroll loop never trips it.
  */
 export function madeProgress(kind: SnapshotAction["kind"], delta: PageDelta, ok: boolean): boolean {
   if (!ok) return false;
   if (delta.urlChanged) return true;
   if (kind === "scroll" || kind === "wait") return false;
-  return delta.textChanged;
+  return delta.textChanged || delta.fieldsChanged === true;
 }
 
 export interface AskContext {

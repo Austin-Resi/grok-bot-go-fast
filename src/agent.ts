@@ -4,6 +4,7 @@ import { buildUiActionQuestions } from "./choose-ui-action.ts";
 import type { Progress, RecentAction } from "./choose-ui-action.ts";
 import { setting } from "./env.ts";
 import { evaluateWithGateway } from "./evaluate.ts";
+import { matchField, type TaskData } from "./field-match.ts";
 import { fieldText } from "./fill-text.ts";
 import { resolveUiDecision } from "./format.ts";
 import { madeProgress, shouldAsk, type AskReason } from "./progress.ts";
@@ -26,6 +27,8 @@ export type FillMode = "bot" | "helper";
 export interface FastWebTaskInput {
   url?: string;
   goal: string;
+  /** Values the Bot already knows (title, price, tags…). Typed into matching fields without a round trip. */
+  data?: TaskData;
   maxSteps?: number;
   maxMs?: number;
   fillMode?: FillMode;
@@ -85,6 +88,8 @@ export interface RunStats {
   offscreenClicks: number;
   /** Stepping-stone hops Jev took on its own after a BLOCKED. */
   routeHops: number;
+  /** Fields filled from provided data without asking the Bot. */
+  dataFills: number;
 }
 
 export interface FastWebTaskResult {
@@ -153,6 +158,8 @@ interface Run {
   routeHopLimit: number;
   /** Consecutive stepping-stone hops since the last Bot decision. */
   routeHops: number;
+  data: TaskData;
+  dataUsed: Set<string>;
 }
 
 let active: Run | undefined;
@@ -170,11 +177,13 @@ function runBudgetMs(input: FastWebTaskInput): number {
 }
 
 function freshStats(): RunStats {
-  return { gatewayMs: 0, asks: 0, lowConfidence: 0, failedTargets: 0, offscreenClicks: 0, routeHops: 0 };
+  return { gatewayMs: 0, asks: 0, lowConfidence: 0, failedTargets: 0, offscreenClicks: 0, routeHops: 0, dataFills: 0 };
 }
 
-function resetProgress(run: Run, goal: string, maxSteps: number, maxMs: number, fillMode: FillMode): void {
+function resetProgress(run: Run, goal: string, maxSteps: number, maxMs: number, fillMode: FillMode, data: TaskData): void {
   run.goal = goal;
+  run.data = data;
+  run.dataUsed = new Set();
   run.maxSteps = maxSteps;
   run.maxMs = maxMs;
   run.fillMode = fillMode;
@@ -202,6 +211,7 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
   const askMargin = numberSetting("ASK_MARGIN", ASK_MARGIN, 0, 1);
   const routeFloor = numberSetting("ROUTE_FLOOR", ROUTE_FLOOR, 0, 1);
   const routeHopLimit = numberSetting("ROUTE_HOPS", ROUTE_HOPS, 0, 40);
+  const data = input.data ?? {};
 
   if (input.reuseBrowser) {
     const run = active;
@@ -219,7 +229,7 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
       run.routeFloor = routeFloor;
       run.routeHopLimit = routeHopLimit;
       run.page = await run.browser.observe({ goal: input.goal, topK });
-      resetProgress(run, input.goal, maxSteps, maxMs, fillMode);
+      resetProgress(run, input.goal, maxSteps, maxMs, fillMode, data);
       run.keepOpen = input.keepOpen ?? run.keepOpen;
       return await advanceActive();
     } catch (error) {
@@ -262,8 +272,10 @@ export async function startFastWebTask(input: FastWebTaskInput): Promise<FastWeb
       routeFloor,
       routeHopLimit,
       routeHops: 0,
+      data,
+      dataUsed: new Set(),
     };
-    resetProgress(run, input.goal, maxSteps, maxMs, fillMode);
+    resetProgress(run, input.goal, maxSteps, maxMs, fillMode, data);
     active = run;
     return await advanceActive();
   } catch (error) {
@@ -336,14 +348,8 @@ export async function chooseFastWebTask(input: ChooseInput): Promise<FastWebTask
     const note = "chosen by the Bot";
     if (action.kind === "fill") {
       run.pending = { action, execute: `TYPE_TEXT [${target}]`, operation: "TYPE_TEXT", target, confidence: pending.confidence, latencyMs: pending.latencyMs };
-      if (run.fillMode === "bot") return needText(run);
-      const text = await fieldText({
-        goal: run.goal,
-        field: { label: action.label, role: action.role, value: action.value },
-        page: { title: run.page.title, text: run.page.text.slice(0, 6000) },
-        recentActions: run.history,
-      });
-      await applyFill(run, text);
+      const paused = await resolveFill(run);
+      if (paused) return paused;
     } else {
       const outcome = await perform(run, action, undefined, note);
       record(run, operation, target, target ? `${operation} [${target}]` : operation, pending.confidence, pending.latencyMs, outcome, note);
@@ -370,6 +376,14 @@ interface Outcome {
   ok: boolean;
   progressed: boolean;
   pageChanged: boolean;
+}
+
+/** Field values, checks and selections, so typing into a form counts as progress. */
+function formState(page: ObservedPage): string {
+  return page.actions
+    .filter((a) => a.node != null && (a.kind === "fill" || a.kind === "select" || a.checked != null))
+    .map((a) => `${a.node}:${a.kind === "select" ? a.current_value ?? "" : a.value ?? ""}:${a.checked ?? ""}`)
+    .join("|");
 }
 
 /**
@@ -401,6 +415,7 @@ async function perform(run: Run, action: SnapshotAction, text?: string, note?: s
   const delta = {
     urlChanged: run.page.url !== before.url,
     textChanged: run.page.text !== before.text,
+    fieldsChanged: formState(run.page) !== formState(before),
   };
   const progressed = madeProgress(action.kind, delta, ok);
   if (delta.urlChanged && run.visited[run.visited.length - 1] !== run.page.url) run.visited.push(run.page.url);
@@ -423,11 +438,44 @@ async function perform(run: Run, action: SnapshotAction, text?: string, note?: s
   return { ok, progressed, pageChanged: delta.urlChanged || delta.textChanged };
 }
 
-async function applyFill(run: Run, text: string): Promise<void> {
+/**
+ * A TYPE_TEXT is pending. Fill it from the Bot's provided data when one value
+ * clearly fits (one cheap Jev comparison, no round trip), else from the helper
+ * model in helper mode, else pause with need_text. Returns the pause result or
+ * undefined when the fill was applied.
+ */
+async function resolveFill(run: Run): Promise<FastWebTaskResult | undefined> {
+  const pending = run.pending;
+  if (!pending) return undefined;
+  const field = { label: pending.action.label, role: pending.action.role, value: pending.action.value };
+
+  if (Object.keys(run.data).length) {
+    const match = await matchField({ goal: run.goal, field, pageTitle: run.page.title, data: run.data, used: run.dataUsed });
+    if (match) {
+      run.stats.gatewayMs += match.gatewayMs;
+      run.stats.dataFills += 1;
+      run.dataUsed.add(match.key);
+      await applyFill(run, match.text, `from data.${match.key} (p=${match.probability.toFixed(2)})`);
+      return undefined;
+    }
+  }
+
+  if (run.fillMode === "bot") return needText(run);
+  const text = await fieldText({
+    goal: run.goal,
+    field,
+    page: { title: run.page.title, text: run.page.text.slice(0, 6000) },
+    recentActions: run.history,
+  });
+  await applyFill(run, text, "from helper model");
+  return undefined;
+}
+
+async function applyFill(run: Run, text: string, source?: string): Promise<void> {
   const pending = run.pending;
   if (!pending) return;
   run.pending = undefined;
-  const outcome = await perform(run, pending.action, text);
+  const outcome = await perform(run, pending.action, text, source);
   run.steps.push({
     step: run.step,
     operation: pending.operation,
@@ -437,7 +485,7 @@ async function applyFill(run: Run, text: string): Promise<void> {
     url: run.page.url,
     latencyMs: pending.latencyMs,
     confidence: pending.confidence,
-    note: outcome.ok ? undefined : "field was covered; nothing typed",
+    note: [outcome.ok ? undefined : "field was covered; nothing typed", source].filter(Boolean).join("; ") || undefined,
     pageChanged: outcome.pageChanged,
     noProgress: run.streak,
   });
@@ -591,6 +639,7 @@ async function advanceActive(): Promise<FastWebTaskResult> {
       const space = actionSpace(run.page, run.goal, run.history, {
         progress: progressState(run),
         canGoBack: run.browser.canGoBack,
+        providedValues: Object.keys(run.data).filter((k) => !run.dataUsed.has(k)),
       });
 
       // The gate tripped: stop guessing, hand the page to the planner with options.
@@ -706,14 +755,8 @@ async function advanceActive(): Promise<FastWebTaskResult> {
           confidence: decision.confidence,
           latencyMs,
         };
-        if (run.fillMode === "bot") return needText(run);
-        const text = await fieldText({
-          goal: run.goal,
-          field: { label: action.label, role: action.role, value: action.value },
-          page: { title: run.page.title, text: run.page.text.slice(0, 6000) },
-          recentActions: run.history,
-        });
-        await applyFill(run, text);
+        const paused = await resolveFill(run);
+        if (paused) return paused;
         continue;
       }
 

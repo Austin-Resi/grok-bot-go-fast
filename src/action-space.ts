@@ -44,6 +44,7 @@ export interface DismissCandidate {
 export interface ActionSpaceOptions {
   progress?: Progress;
   canGoBack?: boolean;
+  providedValues?: string[];
 }
 
 const KIND_TO_OPERATION: Record<string, string> = {
@@ -171,6 +172,7 @@ export function actionSpace(
       extraOperations,
       overlays: [...overlays.values()],
       progress: options.progress,
+      providedValues: options.providedValues,
     },
     resolve(operation, target) {
       if (operation === "WAIT") return controls.get("WAIT") ?? page.actions.find((a) => a.kind === "wait");
